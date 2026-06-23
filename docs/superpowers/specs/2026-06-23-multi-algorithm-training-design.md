@@ -142,10 +142,34 @@ CARLA is running, so both offline and live checks are possible:
    produces a checkpoint + log directory under the correct per-algorithm
    path.
 
-## Out of scope
+## Out of scope (for now)
 
 - `agent/evaluate.py` (Phase 9) — building the evaluation/metrics script
   is a separate piece of work, not required for algorithm-switching
   modularity. Can be brainstormed as its own follow-up once this lands.
-- Discretized action space / DQN support.
+- Discretized action space / DQN support — not built in this pass, but
+  the registry is designed so it can be added later without rework (see
+  below).
 - Parallel multi-environment training (still 1 CARLA instance, as today).
+
+## Future extension: DQN
+
+DQN is deliberately excluded now (see constraint above) but the user
+wants to add it later once a discretized-action variant of the
+environment exists. The registry design in this spec keeps that path
+open:
+
+- `ALGORITHMS` in `agent/algorithms.py` is just a name → SB3 class map;
+  adding `"dqn": DQN` is a one-line change.
+- `build_model()`'s per-algorithm hyperparameter branching already
+  separates on-policy / off-policy / noise-based logic by `algo_name`,
+  so a DQN branch (`exploration_fraction`, `exploration_final_eps`,
+  `target_update_interval`, etc.) slots in the same way without touching
+  other algorithms.
+- The env itself is untouched by this spec. DQN will need a discretized
+  action space, which should be a **separate environment variant** (e.g.
+  `CarlaLaneKeepingEnvDiscrete` wrapping or subclassing
+  `CarlaLaneKeepingEnv`, binning acceleration/steer into N choices) so
+  the continuous algorithms (PPO/SAC/DDPG/TD3) are never affected. That
+  env variant, plus the DQN registry entry and config block, is its own
+  follow-up spec — not part of this implementation.
