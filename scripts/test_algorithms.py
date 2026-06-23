@@ -9,6 +9,7 @@ Run from anywhere:
 
 import sys
 import os
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -141,11 +142,42 @@ def test_build_model_and_learn_for_each_algo():
     print("  ✓ PASSED")
 
 
+def test_build_model_resume():
+    separator("5. build_model() resumes a saved checkpoint")
+    env = DummyContinuousEnv()
+    cfg = {"sac": _TEST_CFG["sac"]}
+
+    fresh_model = build_model(
+        algo_name="sac", cfg=cfg, env=env, tensorboard_log=None, seed=0,
+    )
+    fresh_model.learn(total_timesteps=8, progress_bar=False)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        save_path = os.path.join(tmp_dir, "sac_checkpoint")
+        fresh_model.save(save_path)
+
+        resumed_model = build_model(
+            algo_name="sac",
+            cfg=cfg,
+            env=DummyContinuousEnv(),
+            tensorboard_log=None,
+            resume_path=save_path,
+        )
+        assert isinstance(resumed_model, ALGORITHMS["sac"])
+
+        sample_obs = env.observation_space.sample()
+        action, _ = resumed_model.predict(sample_obs, deterministic=True)
+        assert action.shape == (2,), f"Expected action shape (2,), got {action.shape}"
+        print(f"  Resumed SAC model predicted action: {action}")
+    print("  ✓ PASSED")
+
+
 if __name__ == "__main__":
     test_registry_contents()
     test_run_prefix()
     test_run_prefix_unknown_algo()
     test_build_model_and_learn_for_each_algo()
+    test_build_model_resume()
     print(f"\n{'='*55}")
     print("  ALL TESTS PASSED")
     print(f"{'='*55}\n")
