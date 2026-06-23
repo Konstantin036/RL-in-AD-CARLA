@@ -1,0 +1,26 @@
+# =============================================================
+# CARLA RL Project — Python Dependencies
+# Python 3.8+ recommended (CARLA 0.9.15 works best with 3.8)
+# =============================================================
+
+# CARLA Python API is installed separately from the CARLA package.
+# It is NOT a pip package. See README.md for setup instructions.
+
+# Reinforcement Learning
+stable-baselines3==2.3.2        # PPO implementation we will use
+gymnasium==0.29.1               # Modern OpenAI Gym (SB3 2.x uses this)
+
+# Numerical and scientific
+numpy==1.24.4                   # Array math, observation vectors
+scipy==1.10.1                   # Used later for smoothing and metrics
+
+# Visualization and logging
+tensorboard==2.14.0             # Training curves (plugs into SB3)
+matplotlib==3.7.5               # Evaluation plots
+pandas==2.0.3                   # Storing episode results as CSV
+
+# Configuration
+PyYAML==6.0.1                   # Reading configs/config.yaml
+
+# Utilities
+tqdm==4.66.1                    # Progress bars during training

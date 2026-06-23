@@ -1,0 +1,60 @@
+# =============================================================
+# CARLA Lane Keeping RL — Configuration
+# =============================================================
+# All tunable parameters live here.
+# Change a value here and it propagates everywhere automatically.
+# This file is the single source of truth for your thesis
+# hyperparameter table.
+
+# ── Environment ───────────────────────────────────────────────
+env:
+  host:           "localhost"
+  port:           2000
+  map_name:       "Town04"
+  max_steps:      1000          # steps per episode before truncation
+  action_smooth:  0.6           # action smoother alpha (0=heavy, 1=none)
+  seed:           42            # random seed for spawn point selection
+  spawn_index:    0
+
+# ── Reward function ───────────────────────────────────────────
+reward:
+  w_center:         1.0         # weight: centering reward
+  w_speed:          1.5         # weight: speed reward
+  w_heading:        0.5         # weight: heading alignment reward
+  target_speed_kmh: 30.0        # desired cruising speed
+  sigma_speed:      10.0        # Gaussian width for speed reward
+  terminal_penalty: -10.0       # penalty for collision / off-road
+  step_penalty:     -0.1        # small penalty per step
+
+# ── PPO hyperparameters ───────────────────────────────────────
+# These are Stable-Baselines3 PPO defaults, tuned for CARLA.
+# See: https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html
+ppo:
+  learning_rate:    0.0003      # Adam optimizer learning rate
+  n_steps:         2048         # steps collected per update (rollout buffer)
+  batch_size:       64          # minibatch size for gradient updates
+  n_epochs:         10          # number of epochs per update
+  gamma:            0.99        # discount factor
+  gae_lambda:       0.95        # GAE lambda for advantage estimation
+  clip_range:       0.2         # PPO clipping parameter
+  ent_coef:         0.01        # entropy coefficient (exploration)
+  vf_coef:          0.5         # value function loss coefficient
+  max_grad_norm:    0.5         # gradient clipping
+  verbose:          1           # SB3 verbosity (0=silent, 1=info, 2=debug)
+
+# ── Training ──────────────────────────────────────────────────
+training:
+  total_timesteps:  500000      # total environment steps to train for
+                                # 500k is a reasonable first run (~8 hours)
+                                # increase to 1M-2M for better performance
+  eval_freq:        10000       # evaluate every N training steps
+  eval_episodes:    5           # episodes per evaluation
+  save_freq:        10000       # save checkpoint every N steps
+  log_interval:     10          # SB3 log every N updates
+
+# ── Paths ─────────────────────────────────────────────────────
+paths:
+  log_dir:          "results/logs"
+  checkpoint_dir:   "results/checkpoints"
+  plot_dir:         "results/plots"
+  best_model:       "results/checkpoints/best_model"
