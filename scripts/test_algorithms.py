@@ -10,6 +10,7 @@ Run from anywhere:
 import sys
 import os
 import tempfile
+import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -172,12 +173,33 @@ def test_build_model_resume():
     print("  ✓ PASSED")
 
 
+def test_real_config_builds_every_algorithm():
+    separator("6. configs/config.yaml has a valid block for every algorithm")
+    config_path = os.path.join(os.path.dirname(__file__), "..", "configs", "config.yaml")
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+
+    assert "algo" in cfg, "config.yaml must have a top-level 'algo' field"
+    assert cfg["algo"] in ALGORITHMS, f"cfg['algo']={cfg['algo']!r} is not a registered algorithm"
+
+    for algo_name in ALGORITHMS:
+        assert algo_name in cfg, f"config.yaml is missing a '{algo_name}:' block"
+        env = DummyContinuousEnv()
+        model = build_model(
+            algo_name=algo_name, cfg=cfg, env=env, tensorboard_log=None, seed=0,
+        )
+        assert isinstance(model, ALGORITHMS[algo_name])
+        print(f"  {algo_name}: real config.yaml block builds {type(model).__name__} OK")
+    print("  ✓ PASSED")
+
+
 if __name__ == "__main__":
     test_registry_contents()
     test_run_prefix()
     test_run_prefix_unknown_algo()
     test_build_model_and_learn_for_each_algo()
     test_build_model_resume()
+    test_real_config_builds_every_algorithm()
     print(f"\n{'='*55}")
     print("  ALL TESTS PASSED")
     print(f"{'='*55}\n")

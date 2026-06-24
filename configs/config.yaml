@@ -6,6 +6,14 @@
 # This file is the single source of truth for your thesis
 # hyperparameter table.
 
+# ── Algorithm selection ─────────────────────────────────────────
+# Which RL algorithm to train with. Overridden by `--algo` on the CLI.
+# One of: ppo, sac, ddpg, td3. (DQN is not supported — this project's
+# action space is continuous; see docs/superpowers/specs/2026-06-23-
+# multi-algorithm-training-design.md for why and the planned path to
+# add it.)
+algo: ppo
+
 # ── Environment ───────────────────────────────────────────────
 env:
   host:           "localhost"
@@ -42,6 +50,56 @@ ppo:
   max_grad_norm:    0.5         # gradient clipping
   verbose:          1           # SB3 verbosity (0=silent, 1=info, 2=debug)
 
+# ── SAC hyperparameters ────────────────────────────────────────
+# Off-policy, stochastic policy — explores via entropy, no action
+# noise needed. Starting points from SB3 defaults; not yet
+# benchmarked against CARLA, adjust based on experiments.
+# See: https://stable-baselines3.readthedocs.io/en/master/modules/sac.html
+sac:
+  learning_rate:    0.0003       # Adam optimizer learning rate
+  buffer_size:      200000       # replay buffer capacity (transitions)
+  learning_starts:  1000         # steps of random actions before training starts
+  batch_size:       256          # minibatch size for gradient updates
+  tau:              0.005        # target network soft-update rate
+  gamma:            0.99         # discount factor
+  train_freq:       1            # train every N environment steps
+  gradient_steps:   1            # gradient updates per training call
+  verbose:          1            # SB3 verbosity (0=silent, 1=info, 2=debug)
+
+# ── DDPG hyperparameters ───────────────────────────────────────
+# Off-policy, deterministic policy — needs explicit action noise for
+# exploration (unlike SAC). Starting points from SB3 defaults; not yet
+# benchmarked against CARLA, adjust based on experiments.
+# See: https://stable-baselines3.readthedocs.io/en/master/modules/ddpg.html
+ddpg:
+  learning_rate:      0.001      # Adam optimizer learning rate
+  buffer_size:        200000     # replay buffer capacity (transitions)
+  learning_starts:    1000       # steps of random actions before training starts
+  batch_size:         256        # minibatch size for gradient updates
+  tau:                0.005      # target network soft-update rate
+  gamma:              0.99       # discount factor
+  train_freq:         1          # train every N environment steps
+  gradient_steps:     1          # gradient updates per training call
+  action_noise_sigma: 0.1        # stddev of Gaussian exploration noise
+  verbose:            1          # SB3 verbosity (0=silent, 1=info, 2=debug)
+
+# ── TD3 hyperparameters ────────────────────────────────────────
+# Off-policy, deterministic policy (DDPG's successor) — also needs
+# explicit action noise. Starting points from SB3 defaults; not yet
+# benchmarked against CARLA, adjust based on experiments.
+# See: https://stable-baselines3.readthedocs.io/en/master/modules/td3.html
+td3:
+  learning_rate:      0.001      # Adam optimizer learning rate
+  buffer_size:        200000     # replay buffer capacity (transitions)
+  learning_starts:    1000       # steps of random actions before training starts
+  batch_size:         256        # minibatch size for gradient updates
+  tau:                0.005      # target network soft-update rate
+  gamma:              0.99       # discount factor
+  train_freq:         1          # train every N environment steps
+  gradient_steps:     1          # gradient updates per training call
+  action_noise_sigma: 0.1        # stddev of Gaussian exploration noise
+  verbose:            1          # SB3 verbosity (0=silent, 1=info, 2=debug)
+
 # ── Training ──────────────────────────────────────────────────
 training:
   total_timesteps:  500000      # total environment steps to train for
@@ -53,8 +111,11 @@ training:
   log_interval:     10          # SB3 log every N updates
 
 # ── Paths ─────────────────────────────────────────────────────
+# These are base directories. agent/train.py joins each with the
+# current algorithm name, e.g. results/checkpoints/sac/, so runs for
+# different algorithms never collide or overwrite each other.
+# best_model is not listed separately — it's {checkpoint_dir}/{algo}/best_model.
 paths:
   log_dir:          "results/logs"
   checkpoint_dir:   "results/checkpoints"
   plot_dir:         "results/plots"
-  best_model:       "results/checkpoints/best_model"
