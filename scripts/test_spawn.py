@@ -15,7 +15,9 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from carla_env.env import _check_spawn_index_in_range
+import carla
+
+from carla_env.env import _check_spawn_index_in_range, _compute_spectator_transform
 
 
 def separator(title=""):
@@ -50,10 +52,56 @@ def test_spawn_index_out_of_range():
     print("  ✓ PASSED")
 
 
+def test_spectator_transform_is_behind_and_above():
+    separator("4. Spectator transform is behind and above the vehicle")
+    vehicle_transform = carla.Transform(
+        carla.Location(x=0.0, y=0.0, z=0.0),
+        carla.Rotation(pitch=0.0, yaw=90.0, roll=0.0),
+    )
+    cam_transform = _compute_spectator_transform(
+        vehicle_transform, distance_m=8.0, height_m=4.0, pitch_deg=-15.0,
+    )
+    print(f"  vehicle location: {vehicle_transform.location}")
+    print(f"  camera location:  {cam_transform.location}")
+
+    assert abs(cam_transform.location.z - 4.0) < 1e-3, \
+        "Camera should be 4m above the vehicle"
+
+    forward = vehicle_transform.get_forward_vector()
+    displacement_x = cam_transform.location.x - vehicle_transform.location.x
+    displacement_y = cam_transform.location.y - vehicle_transform.location.y
+    dot = displacement_x * forward.x + displacement_y * forward.y
+    assert dot < 0, \
+        "Camera should be displaced behind the vehicle (opposite its forward vector)"
+
+    assert cam_transform.rotation.pitch == -15.0
+    assert cam_transform.rotation.yaw == vehicle_transform.rotation.yaw
+    print("  ✓ PASSED")
+
+
+def test_spectator_transform_distance():
+    separator("5. Spectator transform respects the configured distance")
+    vehicle_transform = carla.Transform(
+        carla.Location(x=0.0, y=0.0, z=0.0),
+        carla.Rotation(pitch=0.0, yaw=0.0, roll=0.0),
+    )
+    cam_transform = _compute_spectator_transform(
+        vehicle_transform, distance_m=10.0, height_m=0.0, pitch_deg=0.0,
+    )
+    horizontal_distance = (
+        cam_transform.location.x ** 2 + cam_transform.location.y ** 2
+    ) ** 0.5
+    print(f"  horizontal distance from vehicle: {horizontal_distance:.2f}m")
+    assert abs(horizontal_distance - 10.0) < 1e-2
+    print("  ✓ PASSED")
+
+
 if __name__ == "__main__":
     test_spawn_index_none_is_always_valid()
     test_spawn_index_in_range()
     test_spawn_index_out_of_range()
+    test_spectator_transform_is_behind_and_above()
+    test_spectator_transform_distance()
     print(f"\n{'='*55}")
     print("  ALL TESTS PASSED")
     print(f"{'='*55}\n")

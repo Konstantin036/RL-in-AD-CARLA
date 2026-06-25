@@ -83,6 +83,10 @@ DEFAULT_HOST    = "localhost"
 DEFAULT_PORT    = 2000
 DEFAULT_TIMEOUT = 10.0
 
+SPECTATOR_DISTANCE_M = 8.0    # meters behind the vehicle
+SPECTATOR_HEIGHT_M   = 4.0    # meters above the vehicle
+SPECTATOR_PITCH_DEG  = -15.0  # degrees, looking down toward the vehicle
+
 
 def _check_spawn_index_in_range(spawn_index, num_spawn_points: int) -> None:
     """
@@ -102,6 +106,30 @@ def _check_spawn_index_in_range(spawn_index, num_spawn_points: int) -> None:
             f"{num_spawn_points} spawn points available "
             f"(valid range: 0..{num_spawn_points - 1})."
         )
+
+
+def _compute_spectator_transform(vehicle_transform, distance_m: float, height_m: float, pitch_deg: float):
+    """
+    Compute a chase-camera carla.Transform positioned behind and above
+    vehicle_transform, pitched down toward it.
+
+    Pure function of its inputs (only needs the carla module's Location/
+    Rotation/Transform classes, not a live connection) so it can be unit
+    tested offline against a manually constructed vehicle transform.
+    """
+    import carla
+
+    forward = vehicle_transform.get_forward_vector()
+    cam_location = (
+        vehicle_transform.location
+        - forward * distance_m
+        + carla.Location(z=height_m)
+    )
+    cam_rotation = carla.Rotation(
+        pitch=pitch_deg,
+        yaw=vehicle_transform.rotation.yaw,
+    )
+    return carla.Transform(cam_location, cam_rotation)
 
 
 # ── Main environment class ─────────────────────────────────────────────────────
@@ -330,6 +358,23 @@ class CarlaLaneKeepingEnv(gym.Env):
             "All chosen spawn points were occupied."
         )
 
+    def _snap_spectator_to_vehicle(self) -> None:
+        """
+        Move the CARLA spectator camera to a chase view of the ego vehicle.
+
+        Purely a visualization aid — CARLA's spectator never moves on its
+        own, so without this there's no way to see the car in the CARLA
+        window without manually flying the free-look camera to find it.
+        Has no effect on training; safe to call every reset.
+        """
+        cam_transform = _compute_spectator_transform(
+            self._vehicle.get_transform(),
+            distance_m=SPECTATOR_DISTANCE_M,
+            height_m=SPECTATOR_HEIGHT_M,
+            pitch_deg=SPECTATOR_PITCH_DEG,
+        )
+        self._world.get_spectator().set_transform(cam_transform)
+
     # ── Gymnasium interface ────────────────────────────────────────────────────
 
     def reset(self, seed=None, options=None):
@@ -362,6 +407,10 @@ class CarlaLaneKeepingEnv(gym.Env):
 
         # ── Spawn new vehicle ──────────────────────────────────────────────────
         self._vehicle = self._spawn_vehicle()
+
+        # ── Move spectator camera to follow the vehicle ────────────────────────
+        # Visualization aid only — CARLA's spectator never moves on its own.
+        self._snap_spectator_to_vehicle()
 
         # ── Attach collision sensor ────────────────────────────────────────────
         self._collision_sensor = CollisionSensor(self._world, self._vehicle)
