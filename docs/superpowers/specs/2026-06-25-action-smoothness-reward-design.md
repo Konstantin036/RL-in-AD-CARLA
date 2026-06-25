@@ -85,7 +85,7 @@ self._previous_raw_action = np.asarray(action, dtype=np.float32).copy()
 
 computed once, passed into `compute_reward(..., action_delta=action_delta, ...)`.
 
-### 4. `RewardConfig` and `configs/config.yaml` — new weight
+### 4. `RewardConfig` and `configs/config.yaml` — new weight, toggleable like `step_penalty`
 
 `RewardConfig` gains `w_smooth: float = 0.5` (dataclass default, matching
 the project's existing pattern of giving every weight a sensible default).
@@ -93,9 +93,18 @@ the project's existing pattern of giving every weight a sensible default).
 
 ```yaml
 w_smooth:         0.5         # weight: action smoothness penalty
+                               #   (set to 0.0 to disable)
 ```
 
-placed alongside the existing `w_center`/`w_speed`/`w_heading` lines.
+Setting `w_smooth: 0.0` turns the term off completely (no code change, no
+new toggle flag needed) — multiplying any value by a zero weight removes
+its contribution from the total, exactly how `step_penalty` is already
+documented ("Set to 0.0 to disable.") in `RewardConfig`'s docstring. This
+keeps the modularity pattern consistent across the project: just like
+`agent/algorithms.py`'s registry lets you switch RL algorithms via one
+config field, this lets you switch the smoothness penalty on/off via one
+config field, without touching code or restarting with a different flag.
+
 `0.5` matches `w_heading`'s magnitude — meaningful enough to shape
 behavior, not so large it swamps centering/speed/heading.
 
@@ -129,6 +138,12 @@ pattern as the existing centering/speed/heading component tests:
    states") gets a new representative state exercising a nonzero
    `action_delta`, confirming the smoothness term is actually wired into
    the total.
+5. Toggle test: call `compute_reward()` with a large nonzero
+   `action_delta` once with `cfg.w_smooth=0.5` and once with
+   `cfg.w_smooth=0.0`, confirming the two totals differ by exactly
+   `0.5 * r_smoothness` — i.e. the weight genuinely turns the term's
+   contribution on/off, matching `step_penalty`'s existing toggle
+   convention.
 
 Live verification (since this changes training dynamics, not just a pure
 function): start a fresh short training run (a few thousand timesteps) and
