@@ -111,6 +111,7 @@ def make_env(cfg: dict, log_dir: str, seed: int = 0, is_eval: bool = False):
         w_center         = reward_cfg["w_center"],
         w_speed          = reward_cfg["w_speed"],
         w_heading        = reward_cfg["w_heading"],
+        w_smooth         = reward_cfg["w_smooth"],
         target_speed_kmh = reward_cfg["target_speed_kmh"],
         sigma_speed      = reward_cfg["sigma_speed"],
         terminal_penalty = reward_cfg["terminal_penalty"],

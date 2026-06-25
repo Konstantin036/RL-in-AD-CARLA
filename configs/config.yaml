@@ -35,6 +35,8 @@ reward:
   w_center:         1.0         # weight: centering reward
   w_speed:          1.5         # weight: speed reward
   w_heading:        0.5         # weight: heading alignment reward
+  w_smooth:         0.5         # weight: action smoothness penalty
+                                 #   (set to 0.0 to disable)
   target_speed_kmh: 30.0        # desired cruising speed
   sigma_speed:      10.0        # Gaussian width for speed reward
   terminal_penalty: -10.0       # penalty for collision / off-road
