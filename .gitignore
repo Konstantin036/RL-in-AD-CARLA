@@ -36,6 +36,9 @@ Thumbs.db
 .ipynb_checkpoints/
 *.ipynb
 
+# Claude Code worktrees / local settings
+.claude/
+
 # Downloaded wheels (large binaries, not project source)
 *.whl
 sb3_wheels/
