@@ -115,6 +115,7 @@ def make_env(cfg: dict, log_dir: str, seed: int = 0):
         reward_config = rc,
         action_smooth = env_cfg["action_smooth"],
         seed          = env_cfg["seed"] + seed,
+        spawn_index   = env_cfg.get("spawn_index"),
         verbose       = False,
     )
 

@@ -22,7 +22,8 @@ env:
   max_steps:      1000          # steps per episode before truncation
   action_smooth:  0.6           # action smoother alpha (0=heavy, 1=none)
   seed:           42            # random seed for spawn point selection
-  spawn_index:    0
+  spawn_index:    0             # int = always spawn here (deterministic,
+                                 #   for validating learning); null = random
 
 # ── Reward function ───────────────────────────────────────────
 reward:
