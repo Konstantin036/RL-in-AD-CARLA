@@ -54,6 +54,7 @@ class EpisodeLoggerCallback(BaseCallback):
         - termination_reason  collision / off_road / wrong_heading / timeout
         - mean lateral distance
         - mean speed
+        - mean smoothness (1.0 = perfectly smooth control, 0.0 = max jitter)
 
     Usage:
         callback = EpisodeLoggerCallback(log_dir="results/logs")
@@ -65,12 +66,13 @@ class EpisodeLoggerCallback(BaseCallback):
         self.csv_path = os.path.join(log_dir, "episode_log.csv")
 
         # Running episode accumulators
-        self._ep_reward      = 0.0
-        self._ep_steps       = 0
-        self._ep_lat_dists   = []
-        self._ep_speeds      = []
-        self._ep_count       = 0
-        self._training_start = None
+        self._ep_reward       = 0.0
+        self._ep_steps        = 0
+        self._ep_lat_dists    = []
+        self._ep_speeds       = []
+        self._ep_smoothness   = []
+        self._ep_count        = 0
+        self._training_start  = None
 
         # Termination reason counters (for logging distribution)
         self._term_counts = {
@@ -96,6 +98,7 @@ class EpisodeLoggerCallback(BaseCallback):
                 "episode_length",
                 "mean_lateral_dist",
                 "mean_speed_kmh",
+                "mean_smoothness",
                 "termination_reason",
                 "elapsed_seconds",
             ])
@@ -120,10 +123,12 @@ class EpisodeLoggerCallback(BaseCallback):
             self._ep_reward += info.get("reward_total",     0.0)
             self._ep_steps  += 1
 
-            lat = info.get("lateral_distance", 0.0)
-            spd = info.get("speed_kmh",        0.0)
+            lat = info.get("lateral_distance",  0.0)
+            spd = info.get("speed_kmh",         0.0)
+            smooth = info.get("reward_smoothness", 0.0)
             self._ep_lat_dists.append(abs(lat))
             self._ep_speeds.append(spd)
+            self._ep_smoothness.append(smooth)
 
             # Episode ended
             if done:
@@ -135,16 +140,18 @@ class EpisodeLoggerCallback(BaseCallback):
                 self._term_counts[key] += 1
 
                 # Compute episode summary stats
-                mean_lat = float(np.mean(self._ep_lat_dists)) if self._ep_lat_dists else 0.0
-                mean_spd = float(np.mean(self._ep_speeds))    if self._ep_speeds    else 0.0
-                elapsed  = time.time() - self._training_start
+                mean_lat     = float(np.mean(self._ep_lat_dists))  if self._ep_lat_dists  else 0.0
+                mean_spd     = float(np.mean(self._ep_speeds))     if self._ep_speeds     else 0.0
+                mean_smooth  = float(np.mean(self._ep_smoothness)) if self._ep_smoothness else 0.0
+                elapsed      = time.time() - self._training_start
 
                 # ── Log to TensorBoard ─────────────────────────────────────────
-                self.logger.record("episode/reward",       self._ep_reward)
-                self.logger.record("episode/length",       self._ep_steps)
-                self.logger.record("episode/mean_lat_dist",mean_lat)
-                self.logger.record("episode/mean_speed",   mean_spd)
-                self.logger.record("episode/count",        self._ep_count)
+                self.logger.record("episode/reward",         self._ep_reward)
+                self.logger.record("episode/length",         self._ep_steps)
+                self.logger.record("episode/mean_lat_dist",  mean_lat)
+                self.logger.record("episode/mean_speed",     mean_spd)
+                self.logger.record("episode/mean_smoothness",mean_smooth)
+                self.logger.record("episode/count",          self._ep_count)
 
                 # Log termination reason as separate scalars
                 # (easier to plot than a string)
@@ -161,6 +168,7 @@ class EpisodeLoggerCallback(BaseCallback):
                         self._ep_steps,
                         round(mean_lat, 4),
                         round(mean_spd, 4),
+                        round(mean_smooth, 4),
                         reason,
                         round(elapsed, 1),
                     ])
@@ -177,10 +185,11 @@ class EpisodeLoggerCallback(BaseCallback):
                     )
 
                 # Reset accumulators for next episode
-                self._ep_reward    = 0.0
-                self._ep_steps     = 0
-                self._ep_lat_dists = []
-                self._ep_speeds    = []
+                self._ep_reward      = 0.0
+                self._ep_steps       = 0
+                self._ep_lat_dists   = []
+                self._ep_speeds      = []
+                self._ep_smoothness  = []
 
         return True   # True = keep training
 
