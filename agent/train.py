@@ -15,9 +15,9 @@ How to run:
     python agent/train.py --algo td3 --resume results/checkpoints/td3/best_model
 
 What it produces:
-    results/logs/           TensorBoard logs + episode CSV
-    results/checkpoints/    Model checkpoints every save_freq steps
-    results/checkpoints/best_model  Best model by mean eval reward
+    results/logs/<algo>/           TensorBoard logs + episode CSV
+    results/checkpoints/<algo>/    Model checkpoints every save_freq steps
+    results/checkpoints/<algo>/best_model  Best model by mean eval reward
 
 Monitor training with TensorBoard:
     tensorboard --logdir results/logs
