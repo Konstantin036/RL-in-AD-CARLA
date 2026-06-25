@@ -8,9 +8,11 @@ help without needing re-explanation. Read this before touching any file.
 ## What this project is
 
 A reinforcement learning system that trains a car to keep its lane
-in the CARLA driving simulator. The agent uses PPO (Proximal Policy
-Optimization) from Stable-Baselines3. The observation is a 4D
-low-dimensional state vector. The action is 2D continuous control.
+in the CARLA driving simulator. The agent can be trained with PPO,
+SAC, DDPG, or TD3 from Stable-Baselines3, selected via a pluggable
+algorithm registry (`agent/algorithms.py`) — see "Switching algorithms"
+below. The observation is a 4D low-dimensional state vector. The
+action is 2D continuous control.
 
 This is a **graduate thesis project**. Code must be:
 - Clean and readable (will be explained in a thesis defense)
@@ -48,7 +50,8 @@ carla_rl_project/
 │
 ├── agent/                      # RL training pipeline
 │   ├── __init__.py
-│   ├── train.py                # PPO training entry point
+│   ├── algorithms.py           # Algorithm registry: PPO/SAC/DDPG/TD3 -> SB3 classes
+│   ├── train.py                # Multi-algorithm training entry point
 │   ├── evaluate.py             # Evaluation script (Phase 9 — not yet built)
 │   └── callbacks.py            # SB3 callbacks: episode logger, checkpoints
 │
@@ -65,9 +68,9 @@ carla_rl_project/
 │   └── config.yaml             # ALL hyperparameters — single source of truth
 │
 ├── results/                    # Generated at runtime — not committed to git
-│   ├── logs/                   # TensorBoard logs + episode CSV
-│   ├── checkpoints/            # Saved model weights
-│   └── plots/                  # Evaluation plots (Phase 9)
+│   ├── logs/{algo}/            # TensorBoard logs + episode CSV, per algorithm
+│   ├── checkpoints/{algo}/     # Saved model weights, per algorithm
+│   └── plots/{algo}/           # Evaluation plots (Phase 9), per algorithm
 │
 ├── docs/
 │   └── architecture.md         # Thesis-supporting architecture notes
@@ -127,6 +130,36 @@ Index  Name          Range     Mapping
 
 Action smoothing: `smoothed = 0.6 * new + 0.4 * previous`
 Prevents jerky oscillations from Gaussian policy sampling.
+
+### Switching algorithms
+
+`agent/algorithms.py` holds the `ALGORITHMS` registry (`ppo`, `sac`,
+`ddpg`, `td3` → their SB3 classes) and `build_model()`, which knows how
+to translate each algorithm's `configs/config.yaml` block into SB3
+constructor kwargs (on-policy PPO vs. off-policy SAC/DDPG/TD3, plus
+action noise for the deterministic policies DDPG/TD3).
+
+Select an algorithm via `configs/config.yaml`'s top-level `algo:` field,
+or override per run with `--algo`:
+
+```bash
+python agent/train.py --algo sac
+```
+
+Each algorithm's checkpoints and logs live in their own subdirectory
+(`results/checkpoints/{algo}/`, `results/logs/{algo}/`) so runs never
+collide.
+
+**DQN is not supported** — it requires a discrete action space, and this
+project's action space is continuous. Adding it would require a separate
+discretized environment variant; see
+`docs/superpowers/specs/2026-06-23-multi-algorithm-training-design.md`
+for the planned approach.
+
+Adding a new continuous-action algorithm later: add it to `ALGORITHMS`,
+extend `_build_kwargs()` if it needs hyperparameters not already handled,
+and add its block to `configs/config.yaml`. No changes to `train.py`
+are needed.
 
 ### Reward function
 
@@ -195,10 +228,14 @@ python scripts/test_env.py
 # Manual driving (CARLA must be running)
 python scripts/manual_drive.py
 
-# Train PPO agent (CARLA must be running)
+# Train an agent (CARLA must be running) — algo defaults to config.yaml's `algo:` field
 python agent/train.py
-python agent/train.py --timesteps 10000    # quick test
-python agent/train.py --resume results/checkpoints/best_model
+python agent/train.py --algo sac
+python agent/train.py --algo ddpg --timesteps 10000    # quick test
+python agent/train.py --algo td3 --resume results/checkpoints/td3/best_model
+
+# Run offline algorithm-wiring tests (no CARLA needed)
+python scripts/test_algorithms.py
 
 # Monitor training
 tensorboard --logdir results/logs
@@ -209,6 +246,8 @@ tensorboard --logdir results/logs
 ## Current training config (configs/config.yaml)
 
 ```yaml
+algo: ppo                   # ppo | sac | ddpg | td3 — overridden by --algo
+
 env:
   map_name:     Town04      # highway loop, no intersections
   max_steps:    1000        # 50 simulated seconds per episode
@@ -223,6 +262,11 @@ ppo:
   n_steps:       2048
   batch_size:    64
   gamma:         0.99
+
+sac:
+  learning_rate: 0.0003
+  buffer_size:   200000
+  batch_size:    256
 
 training:
   total_timesteps: 500000
@@ -281,6 +325,13 @@ These phases are planned but not implemented:
 - **Camera/lidar sensors** — `carla_env/sensors.py` currently only
   has CollisionSensor. CameraSensor and LidarSensor can be added
   for a high-dimensional observation extension.
+
+- **DQN support** — requires a discretized-action environment variant
+  (e.g. `CarlaLaneKeepingEnvDiscrete`) since DQN only supports discrete
+  action spaces. The algorithm registry in `agent/algorithms.py` is
+  designed so DQN can be added as a one-line registry entry once that
+  env variant exists. See the design spec's "Future extension: DQN"
+  section.
 
 - **Baseline controller** — a PID or pure pursuit controller for
   comparison against the RL agent. Goes in `agent/baseline.py`.

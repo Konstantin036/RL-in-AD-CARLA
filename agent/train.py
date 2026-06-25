@@ -1,22 +1,23 @@
 """
 train.py
 --------
-Phase 8 — PPO Training Entry Point
+Phase 8 — Multi-Algorithm Training Entry Point
 
 Purpose:
-    Load configuration, create the CARLA environment, set up PPO,
-    attach callbacks, and run training.
+    Load configuration, create the CARLA environment, build the
+    selected RL algorithm (PPO, SAC, DDPG, or TD3) via the registry in
+    agent/algorithms.py, attach callbacks, and run training.
 
 How to run:
-    python agent/train.py
-    python agent/train.py --config configs/config.yaml
-    python agent/train.py --timesteps 100000   (quick test run)
-    python agent/train.py --resume results/checkpoints/best_model
+    python agent/train.py                          (uses cfg["algo"], default "ppo")
+    python agent/train.py --algo sac
+    python agent/train.py --algo ddpg --timesteps 10000   (quick test run)
+    python agent/train.py --algo td3 --resume results/checkpoints/td3/best_model
 
 What it produces:
-    results/logs/           TensorBoard logs + episode CSV
-    results/checkpoints/    Model checkpoints every save_freq steps
-    results/checkpoints/best_model  Best model by mean eval reward
+    results/logs/<algo>/           TensorBoard logs + episode CSV
+    results/checkpoints/<algo>/    Model checkpoints every save_freq steps
+    results/checkpoints/<algo>/best_model  Best model by mean eval reward
 
 Monitor training with TensorBoard:
     tensorboard --logdir results/logs
@@ -41,7 +42,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yaml
 import numpy as np
 
-from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.callbacks import (
     CheckpointCallback,
@@ -50,9 +50,10 @@ from stable_baselines3.common.callbacks import (
 )
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from carla_env.env    import CarlaLaneKeepingEnv
-from carla_env.reward import RewardConfig
-from agent.callbacks  import EpisodeLoggerCallback
+from carla_env.env     import CarlaLaneKeepingEnv
+from carla_env.reward  import RewardConfig
+from agent.callbacks   import EpisodeLoggerCallback
+from agent.algorithms  import ALGORITHMS, build_model, get_run_prefix
 
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
@@ -75,7 +76,7 @@ def load_config(config_path: str) -> dict:
 
 # ── Environment factory ────────────────────────────────────────────────────────
 
-def make_env(cfg: dict, seed: int = 0):
+def make_env(cfg: dict, log_dir: str, seed: int = 0):
     """
     Factory function that creates and wraps the CARLA environment.
 
@@ -86,6 +87,11 @@ def make_env(cfg: dict, seed: int = 0):
         SB3's DummyVecEnv expects a callable that returns an env,
         not the env itself. This pattern also makes it easy to create
         multiple parallel environments later.
+
+    Why log_dir as a parameter instead of reading cfg["paths"]["log_dir"]?
+        The caller (train()) computes an algorithm-scoped log directory
+        (e.g. results/logs/sac/) so runs for different algorithms never
+        collide. Reading it directly from cfg here would lose that.
     """
     env_cfg    = cfg["env"]
     reward_cfg = cfg["reward"]
@@ -114,7 +120,6 @@ def make_env(cfg: dict, seed: int = 0):
 
     # Monitor wrapper: records episode reward/length to CSV
     # and makes them available to SB3's logging system
-    log_dir = cfg["paths"]["log_dir"]
     os.makedirs(log_dir, exist_ok=True)
     env = Monitor(env, filename=os.path.join(log_dir, f"monitor_{seed}"))
 
@@ -123,14 +128,20 @@ def make_env(cfg: dict, seed: int = 0):
 
 # ── Main training function ─────────────────────────────────────────────────────
 
-def train(config_path: str, total_timesteps: int = None, resume_path: str = None):
+def train(
+    config_path: str,
+    total_timesteps: int = None,
+    resume_path: str = None,
+    algo: str = None,
+):
     """
-    Full PPO training pipeline.
+    Full multi-algorithm training pipeline (PPO, SAC, DDPG, TD3).
 
     Args:
         config_path:      path to configs/config.yaml
         total_timesteps:  override config value (useful for quick tests)
         resume_path:      path to a saved model to resume training from
+        algo:             algorithm name, overrides cfg["algo"] if given
     """
 
     # ── Load config ────────────────────────────────────────────────────────────
@@ -140,14 +151,31 @@ def train(config_path: str, total_timesteps: int = None, resume_path: str = None
     if total_timesteps is not None:
         cfg["training"]["total_timesteps"] = total_timesteps
 
-    # ── Create output directories ──────────────────────────────────────────────
-    for key in ["log_dir", "checkpoint_dir", "plot_dir"]:
-        os.makedirs(cfg["paths"][key], exist_ok=True)
+    algo_name = algo or cfg.get("algo", "ppo")
+    if algo_name not in ALGORITHMS:
+        raise ValueError(
+            f"Unknown algorithm '{algo_name}'. "
+            f"Available: {sorted(ALGORITHMS.keys())}"
+        )
+    cfg["algo"] = algo_name
+    run_prefix  = get_run_prefix(algo_name)
+    logger.info(f"Algorithm: {algo_name}")
+
+    # ── Algorithm-scoped output directories ───────────────────────────────────
+    # Each algorithm gets its own subdirectory so runs never collide or
+    # overwrite each other's checkpoints/logs.
+    checkpoint_dir = os.path.join(cfg["paths"]["checkpoint_dir"], algo_name)
+    log_dir        = os.path.join(cfg["paths"]["log_dir"], algo_name)
+    plot_dir       = os.path.join(cfg["paths"]["plot_dir"], algo_name)
+    best_model_dir = os.path.join(checkpoint_dir, "best_model")
+
+    for d in [checkpoint_dir, log_dir, plot_dir, best_model_dir]:
+        os.makedirs(d, exist_ok=True)
 
     # ── Timestamped run name ───────────────────────────────────────────────────
     # Each training run gets a unique name so logs don't overwrite each other.
-    run_name    = f"ppo_lane_keeping_{time.strftime('%Y%m%d_%H%M%S')}"
-    run_log_dir = os.path.join(cfg["paths"]["log_dir"], run_name)
+    run_name    = f"{run_prefix}_{time.strftime('%Y%m%d_%H%M%S')}"
+    run_log_dir = os.path.join(log_dir, run_name)
     os.makedirs(run_log_dir, exist_ok=True)
 
     logger.info(f"Run name: {run_name}")
@@ -162,47 +190,28 @@ def train(config_path: str, total_timesteps: int = None, resume_path: str = None
     # DummyVecEnv wraps the env in a vectorized interface that SB3 expects.
     # We use 1 environment (DummyVecEnv with n=1) because CARLA is heavy.
     # Multi-environment training would require multiple CARLA instances.
-    train_env = DummyVecEnv([lambda: make_env(cfg, seed=0)])
+    train_env = DummyVecEnv([lambda: make_env(cfg, log_dir=log_dir, seed=0)])
 
     # ── Create evaluation environment ─────────────────────────────────────────
     # A separate environment for periodic evaluation during training.
     # This gives us unbiased performance estimates on fresh episodes.
     logger.info("Creating evaluation environment ...")
-    eval_env = DummyVecEnv([lambda: make_env(cfg, seed=100)])
+    eval_env = DummyVecEnv([lambda: make_env(cfg, log_dir=log_dir, seed=100)])
 
-    # ── Build PPO agent ────────────────────────────────────────────────────────
-    ppo_cfg = cfg["ppo"]
-
+    # ── Build agent (PPO / SAC / DDPG / TD3 via the registry) ─────────────────
     if resume_path is not None:
-        # Resume training from a saved checkpoint
         logger.info(f"Resuming from: {resume_path}")
-        model = PPO.load(
-            resume_path,
-            env=train_env,
-            tensorboard_log=run_log_dir,
-        )
-    else:
-        # Fresh training run
-        model = PPO(
-            policy         = "MlpPolicy",   # Multi-layer perceptron policy
-                                            # appropriate for our 4D obs space
-            env            = train_env,
-            learning_rate  = ppo_cfg["learning_rate"],
-            n_steps        = ppo_cfg["n_steps"],
-            batch_size     = ppo_cfg["batch_size"],
-            n_epochs       = ppo_cfg["n_epochs"],
-            gamma          = ppo_cfg["gamma"],
-            gae_lambda     = ppo_cfg["gae_lambda"],
-            clip_range     = ppo_cfg["clip_range"],
-            ent_coef       = ppo_cfg["ent_coef"],
-            vf_coef        = ppo_cfg["vf_coef"],
-            max_grad_norm  = ppo_cfg["max_grad_norm"],
-            verbose        = ppo_cfg["verbose"],
-            tensorboard_log= run_log_dir,
-            seed           = cfg["env"]["seed"],
-        )
 
-    logger.info(f"PPO policy network:\n{model.policy}")
+    model = build_model(
+        algo_name       = algo_name,
+        cfg             = cfg,
+        env             = train_env,
+        tensorboard_log = run_log_dir,
+        resume_path     = resume_path,
+        seed            = cfg["env"]["seed"],
+    )
+
+    logger.info(f"{algo_name.upper()} policy network:\n{model.policy}")
 
     # ── Build callbacks ────────────────────────────────────────────────────────
 
@@ -215,8 +224,8 @@ def train(config_path: str, total_timesteps: int = None, resume_path: str = None
     # 2. Checkpoint — saves model every save_freq steps
     checkpoint_cb = CheckpointCallback(
         save_freq   = cfg["training"]["save_freq"],
-        save_path   = cfg["paths"]["checkpoint_dir"],
-        name_prefix = "ppo_lane_keeping",
+        save_path   = checkpoint_dir,
+        name_prefix = run_prefix,
         verbose     = 1,
     )
 
@@ -224,7 +233,7 @@ def train(config_path: str, total_timesteps: int = None, resume_path: str = None
     #    saves the best model seen so far
     eval_cb = EvalCallback(
         eval_env           = eval_env,
-        best_model_save_path = cfg["paths"]["best_model"],
+        best_model_save_path = best_model_dir,
         log_path           = os.path.join(run_log_dir, "eval"),
         eval_freq          = cfg["training"]["eval_freq"],
         n_eval_episodes    = cfg["training"]["eval_episodes"],
@@ -253,7 +262,7 @@ def train(config_path: str, total_timesteps: int = None, resume_path: str = None
         logger.info("Training interrupted by user.")
 
     # ── Save final model ───────────────────────────────────────────────────────
-    final_path = os.path.join(cfg["paths"]["checkpoint_dir"], "final_model")
+    final_path = os.path.join(checkpoint_dir, "final_model")
     model.save(final_path)
     logger.info(f"Final model saved to: {final_path}")
 
@@ -269,13 +278,20 @@ def train(config_path: str, total_timesteps: int = None, resume_path: str = None
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Train a PPO agent for CARLA lane keeping"
+        description="Train an RL agent (PPO/SAC/DDPG/TD3) for CARLA lane keeping"
     )
     parser.add_argument(
         "--config",
         type=str,
         default="configs/config.yaml",
         help="Path to YAML config file",
+    )
+    parser.add_argument(
+        "--algo",
+        type=str,
+        default=None,
+        choices=sorted(ALGORITHMS.keys()),
+        help="RL algorithm to train with (overrides config.yaml's 'algo' field)",
     )
     parser.add_argument(
         "--timesteps",
@@ -298,4 +314,5 @@ if __name__ == "__main__":
         config_path      = args.config,
         total_timesteps  = args.timesteps,
         resume_path      = args.resume,
+        algo             = args.algo,
     )
