@@ -84,6 +84,26 @@ DEFAULT_PORT    = 2000
 DEFAULT_TIMEOUT = 10.0
 
 
+def _check_spawn_index_in_range(spawn_index, num_spawn_points: int) -> None:
+    """
+    Validate that spawn_index (if set) is a valid index into the map's
+    spawn points list. Raises ValueError if out of range.
+
+    Pure function (no CARLA connection needed) so it can be unit tested
+    offline — called from _connect() once the real spawn points list is
+    known, so a misconfigured spawn_index fails fast at environment
+    construction time instead of deep inside a training run.
+    """
+    if spawn_index is None:
+        return
+    if not (0 <= spawn_index < num_spawn_points):
+        raise ValueError(
+            f"spawn_index={spawn_index} is out of range — "
+            f"{num_spawn_points} spawn points available "
+            f"(valid range: 0..{num_spawn_points - 1})."
+        )
+
+
 # ── Main environment class ─────────────────────────────────────────────────────
 
 class CarlaLaneKeepingEnv(gym.Env):
@@ -102,7 +122,10 @@ class CarlaLaneKeepingEnv(gym.Env):
     max_steps     : episode length limit (steps before truncation)
     reward_config : RewardConfig instance (uses defaults if None)
     action_smooth : alpha for action smoother (0=heavy, 1=none)
-    seed          : random seed for spawn point selection
+    seed          : random seed for spawn point selection (random mode only)
+    spawn_index   : if set, always spawn at this exact spawn point index
+                    (deterministic — for validating learning); if None,
+                    spawn randomly (default)
     verbose       : if True, log step-level info (slow — use for debugging)
 
     Example usage:
@@ -206,6 +229,8 @@ class CarlaLaneKeepingEnv(gym.Env):
         self._spawn_points = self._carla_map.get_spawn_points()
         logger.info(f"Map loaded. Spawn points: {len(self._spawn_points)}")
 
+        _check_spawn_index_in_range(self.spawn_index, len(self._spawn_points))
+
         # Enable synchronous mode once — stays on for the entire training run.
         # We only disable it in close().
         self._enable_sync_mode()
@@ -249,7 +274,18 @@ class CarlaLaneKeepingEnv(gym.Env):
 
     def _spawn_vehicle(self):
         """
-        Spawn the ego vehicle at a random spawn point.
+        Spawn the ego vehicle.
+
+        If self.spawn_index is set, always spawns at that exact spawn
+        point (deterministic — for validating that an algorithm is
+        learning, since episode-to-episode progress is only comparable
+        from a fixed start). Retries the same point up to 5 times on
+        transient occupation, then raises — never falls back to a
+        different point, which would silently break the "always the
+        same start" guarantee.
+
+        If self.spawn_index is None, picks a random point (existing
+        behavior, unchanged) — for general training once validated.
 
         Returns carla.Vehicle.
         Raises RuntimeError if all spawn attempts fail.
@@ -260,8 +296,24 @@ class CarlaLaneKeepingEnv(gym.Env):
         if bp.has_attribute("color"):
             bp.set_attribute("color", "255,0,0")   # red for visibility
 
-        # Try up to 5 random spawn points before giving up.
-        # Some spawn points may be occupied if the world has traffic.
+        if self.spawn_index is not None:
+            transform = self._spawn_points[self.spawn_index]
+            for attempt in range(5):
+                vehicle = self._world.try_spawn_actor(bp, transform)
+                if vehicle is not None:
+                    logger.debug(
+                        f"Vehicle spawned at fixed spawn_index={self.spawn_index} "
+                        f"(attempt {attempt+1}): "
+                        f"x={transform.location.x:.1f}, y={transform.location.y:.1f}"
+                    )
+                    return vehicle
+            raise RuntimeError(
+                f"Failed to spawn vehicle at fixed spawn_index={self.spawn_index} "
+                f"after 5 attempts. That spawn point stayed occupied."
+            )
+
+        # Random mode (unchanged): try up to 5 random spawn points before
+        # giving up. Some spawn points may be occupied if the world has traffic.
         for attempt in range(5):
             transform = self._rng.choice(self._spawn_points)
             vehicle   = self._world.try_spawn_actor(bp, transform)
