@@ -228,6 +228,7 @@ class CarlaLaneKeepingEnv(gym.Env):
         self._collision_sensor    = None   # CollisionSensor wrapper
         self._spawn_points        = []     # list of carla.Transform
         self._last_spawn_transform = None  # carla.Transform vehicle was spawned at
+        self._previous_raw_action  = np.zeros(2, dtype=np.float32)  # for smoothness reward
 
         # ── Episode tracking ───────────────────────────────────────────────────
         self._step_count       = 0
@@ -479,6 +480,12 @@ class CarlaLaneKeepingEnv(gym.Env):
         # last episode into the new one.
         self._action_processor.reset()
 
+        # ── Reset smoothness-reward tracking ────────────────────────────────────
+        # Same reasoning as the action smoother: without this, the first
+        # action of a new episode would be compared against the last
+        # action of the *previous* episode.
+        self._previous_raw_action = np.zeros(2, dtype=np.float32)
+
         # ── Compute initial observation ────────────────────────────────────────
         obs_array, obs_data = compute_observation(self._vehicle, self._carla_map)
 
@@ -544,11 +551,17 @@ class CarlaLaneKeepingEnv(gym.Env):
         # Terminal penalty only on agent failure, not on timeout
         is_terminal_for_reward = terminated   # not truncated
 
+        # ── Compute action delta for the smoothness reward ─────────────────────
+        action_array = np.asarray(action, dtype=np.float32)
+        action_delta = action_array - self._previous_raw_action
+        self._previous_raw_action = action_array.copy()
+
         # ── Compute reward ─────────────────────────────────────────────────────
         reward, reward_info = compute_reward(
-            obs_data    = obs_data,
-            is_terminal = is_terminal_for_reward,
-            cfg         = self.reward_config,
+            obs_data     = obs_data,
+            is_terminal  = is_terminal_for_reward,
+            action_delta = action_delta,
+            cfg          = self.reward_config,
         )
 
         # ── Track episode totals ───────────────────────────────────────────────
@@ -566,11 +579,12 @@ class CarlaLaneKeepingEnv(gym.Env):
             "speed_kmh":        obs_data.speed_kmh,
             "steering":         obs_data.steering,
             # Reward breakdown
-            "reward_total":     reward_info.total,
-            "reward_centering": reward_info.r_centering,
-            "reward_speed":     reward_info.r_speed,
-            "reward_heading":   reward_info.r_heading,
-            "reward_terminal":  reward_info.r_terminal,
+            "reward_total":      reward_info.total,
+            "reward_centering":  reward_info.r_centering,
+            "reward_speed":      reward_info.r_speed,
+            "reward_heading":    reward_info.r_heading,
+            "reward_smoothness": reward_info.r_smoothness,
+            "reward_terminal":   reward_info.r_terminal,
             # Episode
             "episode_reward":   self._episode_reward,
             "collision":        collision_flag,
