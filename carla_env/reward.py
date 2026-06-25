@@ -11,13 +11,15 @@ Reward formula:
     r = w_center * r_centering
       + w_speed  * r_speed
       + w_heading * r_heading
+      + w_smooth * r_smoothness
       + r_terminal  (only on terminal steps)
 
 Where:
-    r_centering = 1.0 - |lateral_distance| / MAX_LATERAL_DISTANCE
-    r_speed     = exp(-((speed - target_speed)^2) / (2 * sigma^2))
-    r_heading   = 1.0 - |heading_error| / pi
-    r_terminal  = TERMINAL_PENALTY  (large negative, episode-ending events)
+    r_centering  = 1.0 - |lateral_distance| / MAX_LATERAL_DISTANCE
+    r_speed      = exp(-((speed - target_speed)^2) / (2 * sigma^2))
+    r_heading    = 1.0 - |heading_error| / pi
+    r_smoothness = 1.0 - sum(|action_delta|) / 4.0
+    r_terminal   = TERMINAL_PENALTY  (large negative, episode-ending events)
 
 Design goals:
     1. All non-terminal terms are in [0, 1] — easy to reason about weights
@@ -208,8 +210,9 @@ def compute_smoothness_reward(action_delta: np.ndarray) -> float:
 # ── Main reward function ───────────────────────────────────────────────────────
 
 def compute_reward(
-    obs_data,           # ObservationData from observation.py
-    is_terminal: bool,  # True if the episode is ending this step
+    obs_data,                 # ObservationData from observation.py
+    is_terminal: bool,        # True if the episode is ending this step
+    action_delta: np.ndarray, # current raw action minus previous raw action, shape (2,)
     cfg: RewardConfig = None,
 ) -> tuple:
     """
@@ -219,11 +222,13 @@ def compute_reward(
     and the new observation is computed.
 
     Args:
-        obs_data:    ObservationData (lateral_distance_m, heading_error_rad,
-                     speed_kmh, steering) — from observation.py
-        is_terminal: True if the episode ends after this step
-                     (collision, off-road, or timeout)
-        cfg:         RewardConfig — defaults to RewardConfig() if None
+        obs_data:     ObservationData (lateral_distance_m, heading_error_rad,
+                      speed_kmh, steering) — from observation.py
+        is_terminal:  True if the episode ends after this step
+                      (collision, off-road, or timeout)
+        action_delta: current raw action minus the previous raw action,
+                      shape (2,) — see compute_smoothness_reward()
+        cfg:          RewardConfig — defaults to RewardConfig() if None
 
     Returns:
         reward:      float — scalar reward for the agent
@@ -246,6 +251,8 @@ def compute_reward(
 
     r_heading = compute_heading_reward(obs_data.heading_error_rad)
 
+    r_smoothness = compute_smoothness_reward(action_delta)
+
     # ── Terminal penalty ────────────────────────────────────────────────────────
     # Only applied on the step where the episode ends badly.
     # Not applied on timeout (episode ran for max steps without crashing).
@@ -259,6 +266,7 @@ def compute_reward(
         cfg.w_center  * r_centering
         + cfg.w_speed   * r_speed
         + cfg.w_heading * r_heading
+        + cfg.w_smooth  * r_smoothness
         + r_terminal
         + r_step
     )
@@ -268,6 +276,7 @@ def compute_reward(
         r_centering=r_centering,
         r_speed=r_speed,
         r_heading=r_heading,
+        r_smoothness=r_smoothness,
         r_terminal=r_terminal,
         r_step=r_step,
         is_terminal=is_terminal,

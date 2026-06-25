@@ -115,6 +115,35 @@ def test_smoothness():
     print("  ✓ PASSED")
 
 
+def test_smoothness_toggle():
+    sep("3c. w_smooth=0.0 fully disables the smoothness term's contribution")
+    obs = ObservationData(
+        lateral_distance_m=0.0,
+        heading_error_rad=0.0,
+        speed_kmh=30.0,
+        steering=0.0,
+    )
+    action_delta = np.array([1.5, -1.0])  # a large, nonzero change
+
+    cfg_on = RewardConfig(w_smooth=0.5)
+    cfg_off = RewardConfig(w_smooth=0.0)
+
+    reward_on, info_on = compute_reward(obs, False, action_delta, cfg_on)
+    reward_off, info_off = compute_reward(obs, False, action_delta, cfg_off)
+
+    # The raw component is identical either way — only its weighted
+    # contribution to the total changes.
+    assert abs(info_on.r_smoothness - info_off.r_smoothness) < 1e-9
+    expected_diff = 0.5 * info_on.r_smoothness
+    actual_diff = reward_on - reward_off
+    print(f"  reward with w_smooth=0.5: {reward_on:+.4f}")
+    print(f"  reward with w_smooth=0.0: {reward_off:+.4f}")
+    print(f"  difference: {actual_diff:.4f}  (expected: {expected_diff:.4f})")
+    assert abs(actual_diff - expected_diff) < 1e-6, \
+        f"Expected difference {expected_diff}, got {actual_diff}"
+    print("  ✓ PASSED")
+
+
 # ── Test 4: Full reward at representative states ───────────────────────────────
 
 def test_full_reward():
@@ -141,7 +170,9 @@ def test_full_reward():
             speed_kmh=spd,
             steering=0.0,
         )
-        reward, info = compute_reward(obs, is_terminal=is_term, cfg=cfg)
+        reward, info = compute_reward(
+            obs, is_terminal=is_term, action_delta=np.zeros(2), cfg=cfg,
+        )
         term_marker = " ← TERMINAL" if is_term else ""
         print(f"  {lat:>5.1f} {hdg_deg:>6.1f} {spd:>5.1f}  "
               f"{info.total:>+7.3f}  "
@@ -152,10 +183,11 @@ def test_full_reward():
 
     print("\n  Best possible reward (no step penalty):")
     obs_best = ObservationData(0.0, 0.0, 30.0, 0.0)
-    r_best, _ = compute_reward(obs_best, False, cfg)
+    r_best, _ = compute_reward(obs_best, False, action_delta=np.zeros(2), cfg=cfg)
     print(f"    w_center({cfg.w_center}) * 1.0 "
           f"+ w_speed({cfg.w_speed}) * 1.0 "
           f"+ w_heading({cfg.w_heading}) * 1.0 "
+          f"+ w_smooth({cfg.w_smooth}) * 1.0 "
           f"+ step_penalty({cfg.step_penalty})")
     print(f"    = {r_best:+.3f}")
     print("  ✓ PASSED")
@@ -219,17 +251,22 @@ def test_reward_range():
             steering          =random.uniform(-1.0,   1.0),
         )
         is_terminal = random.random() < 0.05
-        r, _ = compute_reward(obs, is_terminal, cfg)
+        action_delta = np.array([
+            random.uniform(-2.0, 2.0),
+            random.uniform(-2.0, 2.0),
+        ])
+        r, _ = compute_reward(obs, is_terminal, action_delta, cfg)
         min_r = min(min_r, r)
         max_r = max(max_r, r)
 
+    max_possible = cfg.w_center + cfg.w_speed + cfg.w_heading + cfg.w_smooth + cfg.step_penalty
     print(f"  Sampled {n_samples} random states")
     print(f"  Min reward: {min_r:+.3f}")
     print(f"  Max reward: {max_r:+.3f}")
     print(f"  Expected:   min ≈ {cfg.terminal_penalty + cfg.step_penalty:.1f},  "
-          f"max ≈ {cfg.w_center + cfg.w_speed + cfg.w_heading + cfg.step_penalty:.2f}")
+          f"max ≈ {max_possible:.2f}")
     assert min_r >= cfg.terminal_penalty - 0.1, "Min reward unexpectedly low"
-    assert max_r <= cfg.w_center + cfg.w_speed + cfg.w_heading + 0.1, "Max reward unexpectedly high"
+    assert max_r <= max_possible + 0.1, "Max reward unexpectedly high"
     print("  ✓ PASSED")
 
 
@@ -245,6 +282,7 @@ def main():
     test_speed()
     test_heading()
     test_smoothness()
+    test_smoothness_toggle()
     test_full_reward()
     test_termination()
     test_reward_range()
