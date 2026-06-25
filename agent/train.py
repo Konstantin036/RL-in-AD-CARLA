@@ -12,12 +12,13 @@ How to run:
     python agent/train.py                          (uses cfg["algo"], default "ppo")
     python agent/train.py --algo sac
     python agent/train.py --algo ddpg --timesteps 10000   (quick test run)
-    python agent/train.py --algo td3 --resume results/checkpoints/td3/best_model
+    python agent/train.py --algo td3 --resume results/checkpoints/td3/td3_lane_keeping_20260101_120000/best_model
 
 What it produces:
     results/logs/<algo>/           TensorBoard logs + episode CSV
-    results/checkpoints/<algo>/    Model checkpoints every save_freq steps
-    results/checkpoints/<algo>/best_model  Best model by mean eval reward
+    results/checkpoints/<algo>/<run_name>/    Model checkpoints every save_freq steps
+    results/checkpoints/<algo>/<run_name>/best_model  Best model by mean eval reward
+    results/checkpoints/<algo>/<run_name>/final_model.zip  Model at end of this run
 
 Monitor training with TensorBoard:
     tensorboard --logdir results/logs
@@ -178,19 +179,23 @@ def train(
     checkpoint_dir = os.path.join(cfg["paths"]["checkpoint_dir"], algo_name)
     log_dir        = os.path.join(cfg["paths"]["log_dir"], algo_name)
     plot_dir       = os.path.join(cfg["paths"]["plot_dir"], algo_name)
-    best_model_dir = os.path.join(checkpoint_dir, "best_model")
-
-    for d in [checkpoint_dir, log_dir, plot_dir, best_model_dir]:
-        os.makedirs(d, exist_ok=True)
 
     # ── Timestamped run name ───────────────────────────────────────────────────
-    # Each training run gets a unique name so logs don't overwrite each other.
-    run_name    = f"{run_prefix}_{time.strftime('%Y%m%d_%H%M%S')}"
-    run_log_dir = os.path.join(log_dir, run_name)
-    os.makedirs(run_log_dir, exist_ok=True)
+    # Each training run gets a unique name, and checkpoints/best_model are
+    # scoped under it (not just under the algorithm) — otherwise two
+    # separate runs of the same algorithm that both reach e.g. 50,000
+    # steps would silently overwrite each other's checkpoint files.
+    run_name           = f"{run_prefix}_{time.strftime('%Y%m%d_%H%M%S')}"
+    run_log_dir        = os.path.join(log_dir, run_name)
+    run_checkpoint_dir = os.path.join(checkpoint_dir, run_name)
+    best_model_dir     = os.path.join(run_checkpoint_dir, "best_model")
+
+    for d in [run_checkpoint_dir, run_log_dir, plot_dir, best_model_dir]:
+        os.makedirs(d, exist_ok=True)
 
     logger.info(f"Run name: {run_name}")
     logger.info(f"Log dir:  {run_log_dir}")
+    logger.info(f"Checkpoint dir: {run_checkpoint_dir}")
 
     # Save config copy to run directory for reproducibility
     import shutil
@@ -235,7 +240,7 @@ def train(
     # 2. Checkpoint — saves model every save_freq steps
     checkpoint_cb = CheckpointCallback(
         save_freq   = cfg["training"]["save_freq"],
-        save_path   = checkpoint_dir,
+        save_path   = run_checkpoint_dir,
         name_prefix = run_prefix,
         verbose     = 1,
     )
@@ -273,7 +278,7 @@ def train(
         logger.info("Training interrupted by user.")
 
     # ── Save final model ───────────────────────────────────────────────────────
-    final_path = os.path.join(checkpoint_dir, "final_model")
+    final_path = os.path.join(run_checkpoint_dir, "final_model")
     model.save(final_path)
     logger.info(f"Final model saved to: {final_path}")
 

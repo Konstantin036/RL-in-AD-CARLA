@@ -147,8 +147,11 @@ python agent/train.py --algo sac
 ```
 
 Each algorithm's checkpoints and logs live in their own subdirectory
-(`results/checkpoints/{algo}/`, `results/logs/{algo}/`) so runs never
-collide.
+(`results/checkpoints/{algo}/`, `results/logs/{algo}/`), and within
+that, each run gets its own timestamped subdirectory
+(`results/checkpoints/{algo}/{algo}_lane_keeping_YYYYMMDD_HHMMSS/`) so
+two separate runs of the same algorithm never overwrite each other's
+checkpoints, even if both happen to reach the same step count.
 
 **DQN is not supported** — it requires a discrete action space, and this
 project's action space is continuous. Adding it would require a separate
@@ -232,7 +235,7 @@ python scripts/manual_drive.py
 python agent/train.py
 python agent/train.py --algo sac
 python agent/train.py --algo ddpg --timesteps 10000    # quick test
-python agent/train.py --algo td3 --resume results/checkpoints/td3/best_model
+python agent/train.py --algo td3 --resume results/checkpoints/td3/td3_lane_keeping_20260101_120000/best_model
 
 # Run offline algorithm-wiring tests (no CARLA needed)
 python scripts/test_algorithms.py
