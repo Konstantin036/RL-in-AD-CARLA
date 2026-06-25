@@ -389,26 +389,31 @@ class CarlaLaneKeepingEnv(gym.Env):
             "All chosen spawn points were occupied."
         )
 
-    def _snap_spectator_to_vehicle(self) -> None:
+    def _snap_spectator_to_vehicle(self, vehicle_transform) -> None:
         """
-        Move the CARLA spectator camera to a chase view of the ego vehicle.
+        Move the CARLA spectator camera to a chase view of the vehicle.
 
         Purely a visualization aid — CARLA's spectator never moves on its
         own, so without this there's no way to see the car in the CARLA
         window without manually flying the free-look camera to find it.
-        Has no effect on training; safe to call every reset.
+        Has no effect on training; safe to call every reset and step.
 
-        Uses self._last_spawn_transform (the transform _spawn_vehicle()
-        requested) rather than self._vehicle.get_transform(). CARLA's
-        client-side actor cache does not reflect a freshly spawned actor's
-        real transform until at least one world.tick() has elapsed —
-        querying get_transform() right after spawning returns a stale
-        (0,0,0)-at-yaw-0 placeholder (confirmed via live testing). The
-        spawn transform we requested is already known synchronously and
-        is accurate enough for a visualization-only chase camera.
+        Takes vehicle_transform as a parameter rather than always calling
+        self._vehicle.get_transform() itself, because the right source
+        differs by caller:
+          - reset() passes self._last_spawn_transform (the transform
+            _spawn_vehicle() requested). CARLA's client-side actor cache
+            does not reflect a freshly spawned actor's real transform
+            until at least one world.tick() has elapsed — querying
+            get_transform() right after spawning returns a stale
+            (0,0,0)-at-yaw-0 placeholder (confirmed via live testing).
+          - step() passes self._vehicle.get_transform() directly, which
+            is reliable by then (at least one tick has already happened
+            since spawn) and lets the camera continuously track the
+            moving vehicle rather than staying fixed at its spawn point.
         """
         cam_transform = _compute_spectator_transform(
-            self._last_spawn_transform,
+            vehicle_transform,
             distance_m=SPECTATOR_DISTANCE_M,
             height_m=SPECTATOR_HEIGHT_M,
             pitch_deg=SPECTATOR_PITCH_DEG,
@@ -450,7 +455,7 @@ class CarlaLaneKeepingEnv(gym.Env):
 
         # ── Move spectator camera to follow the vehicle ────────────────────────
         # Visualization aid only — CARLA's spectator never moves on its own.
-        self._snap_spectator_to_vehicle()
+        self._snap_spectator_to_vehicle(self._last_spawn_transform)
 
         # ── Attach collision sensor ────────────────────────────────────────────
         self._collision_sensor = CollisionSensor(self._world, self._vehicle)
@@ -515,6 +520,11 @@ class CarlaLaneKeepingEnv(gym.Env):
 
         # ── Advance simulation by one physics step ─────────────────────────────
         self._world.tick()
+
+        # ── Move spectator camera to follow the moving vehicle ─────────────────
+        # Visualization aid only — see _snap_spectator_to_vehicle()'s docstring
+        # for why step() (unlike reset()) can safely use get_transform() directly.
+        self._snap_spectator_to_vehicle(self._vehicle.get_transform())
 
         # ── Compute new observation ────────────────────────────────────────────
         obs_array, obs_data = compute_observation(self._vehicle, self._carla_map)
