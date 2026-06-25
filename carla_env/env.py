@@ -192,8 +192,9 @@ class CarlaLaneKeepingEnv(gym.Env):
         # CARLA server — this matters because train.py creates two
         # environments (train + eval) back to back, and the second one would
         # otherwise reload the map the first one just loaded.
-        current_world = self._client.get_world()
-        if current_world.get_map().name.endswith(self.map_name):
+        current_world     = self._client.get_world()
+        current_map_name  = current_world.get_map().name.split("/")[-1]
+        if current_map_name == self.map_name:
             logger.info(f"Map {self.map_name} already loaded, reusing world.")
             self._world = current_world
         else:
