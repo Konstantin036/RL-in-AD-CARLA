@@ -38,6 +38,7 @@ Thumbs.db
 
 # Claude Code worktrees / local settings
 .claude/
+.superpowers/
 
 # Downloaded wheels (large binaries, not project source)
 *.whl
