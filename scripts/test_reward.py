@@ -11,6 +11,7 @@ Run from project root:
 import sys
 import os
 import math
+import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -20,6 +21,7 @@ from carla_env.reward import (
     compute_centering_reward,
     compute_speed_reward,
     compute_heading_reward,
+    compute_smoothness_reward,
     compute_reward,
     check_termination,
 )
@@ -90,6 +92,26 @@ def test_heading():
         ok = abs(got - expected) < 0.005
         hdg_deg = math.degrees(hdg)
         print(f"  {hdg_deg:>12.1f}  {expected:>10.3f}  {got:>10.3f}  {'✓' if ok else '✗'}  {note}")
+    print("  ✓ PASSED")
+
+
+# ── Test: Smoothness reward ────────────────────────────────────────────────────
+
+def test_smoothness():
+    sep("3b. Smoothness reward  r = 1 - sum(|action_delta|) / 4.0")
+    cases = [
+        # (action_delta, expected, description)
+        (np.array([0.0,  0.0]), 1.0, "no change — perfectly smooth"),
+        (np.array([2.0,  2.0]), 0.0, "both dims flipped full range"),
+        (np.array([0.5, -0.3]), 0.8, "moderate change"),
+        (np.array([2.0,  0.0]), 0.5, "one dim flipped halfway"),
+        (np.array([3.0,  3.0]), 0.0, "beyond max — clipped at 0.0"),
+    ]
+    for action_delta, expected, desc in cases:
+        result = compute_smoothness_reward(action_delta)
+        status = "✓" if abs(result - expected) < 1e-6 else "✗"
+        print(f"  delta={action_delta}  expected={expected:.3f}  got={result:.3f}  {status}  {desc}")
+        assert abs(result - expected) < 1e-6, f"{desc}: expected {expected}, got {result}"
     print("  ✓ PASSED")
 
 
@@ -222,6 +244,7 @@ def main():
     test_centering()
     test_speed()
     test_heading()
+    test_smoothness()
     test_full_reward()
     test_termination()
     test_reward_range()

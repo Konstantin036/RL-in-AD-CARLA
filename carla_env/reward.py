@@ -55,6 +55,7 @@ class RewardConfig:
         Agent drives too fast  → decrease target_speed or sigma_speed
         Agent cuts corners     → increase w_heading
         Agent hugs one side    → increase w_center
+        Agent steers jerkily   → increase w_smooth (0.0 disables it)
     """
 
     # ── Centering term ─────────────────────────────────────────────────────────
@@ -68,6 +69,11 @@ class RewardConfig:
 
     # ── Heading term ───────────────────────────────────────────────────────────
     w_heading: float = 0.5          # weight for heading alignment reward
+
+    # ── Smoothness term ────────────────────────────────────────────────────────
+    # Penalizes large step-to-step changes in the raw action (acceleration
+    # and steering both). Set to 0.0 to disable.
+    w_smooth: float = 0.5           # weight for action smoothness penalty
 
     # ── Terminal penalty ────────────────────────────────────────────────────────
     terminal_penalty: float = -10.0  # reward given when episode ends badly
@@ -95,6 +101,7 @@ class RewardInfo:
     r_centering: float   # centering component (before weighting)
     r_speed: float       # speed component (before weighting)
     r_heading: float     # heading component (before weighting)
+    r_smoothness: float  # smoothness component (before weighting)
     r_terminal: float    # terminal penalty (0 unless episode ended)
     r_step: float        # step penalty
     is_terminal: bool    # True if episode ended this step
@@ -105,6 +112,7 @@ class RewardInfo:
             f"center={self.r_centering:.3f} "
             f"speed={self.r_speed:.3f} "
             f"heading={self.r_heading:.3f} "
+            f"smooth={self.r_smoothness:.3f} "
             f"terminal={self.r_terminal:.1f})"
         )
 
@@ -172,6 +180,29 @@ def compute_heading_reward(heading_error_rad: float) -> float:
     """
     normalized = abs(heading_error_rad) / math.pi
     return float(max(0.0, 1.0 - normalized))
+
+
+def compute_smoothness_reward(action_delta: np.ndarray) -> float:
+    """
+    Reward for smooth (low-jitter) control inputs.
+
+    Formula: 1.0 - sum(|action_delta|) / 4.0
+    Range:   [0.0, 1.0]
+    Peak:    1.0 when action_delta is exactly zero (no change since
+             last step)
+    Zero:    0.0 when both action dimensions swing the full range in
+             one step (e.g. acceleration -1 -> +1 AND steer -1 -> +1
+             simultaneously: |Δ|=2.0 each, sum=4.0)
+
+    Why penalize the raw action instead of the smoothed/applied one?
+        carla_env/action.py's ActionSmoother (alpha=0.6) already limits
+        how much jitter reaches the vehicle, but the policy itself can
+        still rely on that filter to absorb jitter it didn't need to
+        output in the first place. Penalizing the raw action teaches
+        the policy to be smooth on its own.
+    """
+    delta_magnitude = float(np.abs(action_delta).sum())
+    return max(0.0, 1.0 - delta_magnitude / 4.0)
 
 
 # ── Main reward function ───────────────────────────────────────────────────────
