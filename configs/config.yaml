@@ -22,8 +22,13 @@ env:
   max_steps:      1000          # steps per episode before truncation
   action_smooth:  0.6           # action smoother alpha (0=heavy, 1=none)
   seed:           42            # random seed for spawn point selection
-  spawn_index:    0             # int = always spawn here (deterministic,
-                                 #   for validating learning); null = random
+  spawn_index:    150           # int = always spawn here (deterministic,
+                                 #   for validating learning); null = random.
+                                 #   150 chosen on a straight Town04 segment
+                                 #   clear of any junction/fork for 450m ahead
+                                 #   (a full episode at target speed covers
+                                 #   ~417m). Index 0 hit a fork ~310m ahead,
+                                 #   causing collisions with barrels.
 
 # ── Reward function ───────────────────────────────────────────
 reward:
