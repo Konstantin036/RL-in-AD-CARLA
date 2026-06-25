@@ -201,9 +201,10 @@ class CarlaLaneKeepingEnv(gym.Env):
         self._client           = None   # carla.Client
         self._world            = None   # carla.World
         self._carla_map        = None   # carla.Map
-        self._vehicle          = None   # carla.Vehicle (ego)
-        self._collision_sensor = None   # CollisionSensor wrapper
-        self._spawn_points     = []     # list of carla.Transform
+        self._vehicle             = None   # carla.Vehicle (ego)
+        self._collision_sensor    = None   # CollisionSensor wrapper
+        self._spawn_points        = []     # list of carla.Transform
+        self._last_spawn_transform = None  # carla.Transform vehicle was spawned at
 
         # ── Episode tracking ───────────────────────────────────────────────────
         self._step_count       = 0
@@ -334,6 +335,7 @@ class CarlaLaneKeepingEnv(gym.Env):
                         f"(attempt {attempt+1}): "
                         f"x={transform.location.x:.1f}, y={transform.location.y:.1f}"
                     )
+                    self._last_spawn_transform = transform
                     return vehicle
             raise RuntimeError(
                 f"Failed to spawn vehicle at fixed spawn_index={self.spawn_index} "
@@ -351,6 +353,7 @@ class CarlaLaneKeepingEnv(gym.Env):
                     f"x={transform.location.x:.1f}, "
                     f"y={transform.location.y:.1f}"
                 )
+                self._last_spawn_transform = transform
                 return vehicle
 
         raise RuntimeError(
@@ -366,9 +369,18 @@ class CarlaLaneKeepingEnv(gym.Env):
         own, so without this there's no way to see the car in the CARLA
         window without manually flying the free-look camera to find it.
         Has no effect on training; safe to call every reset.
+
+        Uses self._last_spawn_transform (the transform _spawn_vehicle()
+        requested) rather than self._vehicle.get_transform(). CARLA's
+        client-side actor cache does not reflect a freshly spawned actor's
+        real transform until at least one world.tick() has elapsed —
+        querying get_transform() right after spawning returns a stale
+        (0,0,0)-at-yaw-0 placeholder (confirmed via live testing). The
+        spawn transform we requested is already known synchronously and
+        is accurate enough for a visualization-only chase camera.
         """
         cam_transform = _compute_spectator_transform(
-            self._vehicle.get_transform(),
+            self._last_spawn_transform,
             distance_m=SPECTATOR_DISTANCE_M,
             height_m=SPECTATOR_HEIGHT_M,
             pitch_deg=SPECTATOR_PITCH_DEG,
