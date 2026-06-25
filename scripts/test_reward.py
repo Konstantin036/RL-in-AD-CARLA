@@ -104,7 +104,7 @@ def test_smoothness():
         (np.array([0.0,  0.0]), 1.0, "no change — perfectly smooth"),
         (np.array([2.0,  2.0]), 0.0, "both dims flipped full range"),
         (np.array([0.5, -0.3]), 0.8, "moderate change"),
-        (np.array([2.0,  0.0]), 0.5, "one dim flipped halfway"),
+        (np.array([1.0,  0.0]), 0.75, "one dim flipped halfway"),
         (np.array([3.0,  3.0]), 0.0, "beyond max — clipped at 0.0"),
     ]
     for action_delta, expected, desc in cases:
