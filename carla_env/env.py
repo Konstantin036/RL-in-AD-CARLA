@@ -186,9 +186,20 @@ class CarlaLaneKeepingEnv(gym.Env):
         version = self._client.get_server_version()
         logger.info(f"Connected. Server version: {version}")
 
-        logger.info(f"Loading map: {self.map_name} ...")
-        self._world    = self._client.load_world(self.map_name)
-        time.sleep(2.0)   # let world initialize
+        # Reuse the already-running world if it's already on the requested
+        # map, instead of always calling load_world(). Reloading a map that's
+        # already loaded is redundant and has been observed to crash the
+        # CARLA server — this matters because train.py creates two
+        # environments (train + eval) back to back, and the second one would
+        # otherwise reload the map the first one just loaded.
+        current_world = self._client.get_world()
+        if current_world.get_map().name.endswith(self.map_name):
+            logger.info(f"Map {self.map_name} already loaded, reusing world.")
+            self._world = current_world
+        else:
+            logger.info(f"Loading map: {self.map_name} ...")
+            self._world = self._client.load_world(self.map_name)
+            time.sleep(2.0)   # let world initialize
 
         self._carla_map   = self._world.get_map()
         self._spawn_points = self._carla_map.get_spawn_points()
