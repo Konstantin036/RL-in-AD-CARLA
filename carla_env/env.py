@@ -108,6 +108,23 @@ def _check_spawn_index_in_range(spawn_index, num_spawn_points: int) -> None:
         )
 
 
+def _compute_effective_spawn_index(spawn_index: int, offset: int, num_spawn_points: int) -> int:
+    """
+    Compute the actual spawn point index to use, after applying a role
+    offset (e.g. +1 for the eval environment) with wraparound.
+
+    Pure function (no CARLA connection needed) so it can be unit tested
+    offline. Exists because agent/train.py runs a train_env and an
+    eval_env simultaneously against the same CARLA server; if both were
+    configured with the identical spawn_index, whichever one currently
+    has a live vehicle there would permanently block the other from
+    ever spawning (confirmed via live testing). Offsetting the eval
+    environment's effective index keeps both deterministic while
+    avoiding the conflict.
+    """
+    return (spawn_index + offset) % num_spawn_points
+
+
 def _compute_spectator_transform(vehicle_transform, distance_m: float, height_m: float, pitch_deg: float):
     """
     Compute a chase-camera carla.Transform positioned behind and above
@@ -154,6 +171,10 @@ class CarlaLaneKeepingEnv(gym.Env):
     spawn_index   : if set, always spawn at this exact spawn point index
                     (deterministic — for validating learning); if None,
                     spawn randomly (default)
+    spawn_index_offset : added to spawn_index (with wraparound) before
+                    use; lets a second simultaneous environment (e.g.
+                    agent/train.py's eval_env) avoid contending for the
+                    identical spawn point as this one (default 0)
     verbose       : if True, log step-level info (slow — use for debugging)
 
     Example usage:
@@ -180,6 +201,7 @@ class CarlaLaneKeepingEnv(gym.Env):
         action_smooth: float= 0.6,
         seed: int           = None,
         spawn_index: int     = None,
+        spawn_index_offset: int = 0,
         verbose: bool       = False,
     ):
         super().__init__()
@@ -190,7 +212,8 @@ class CarlaLaneKeepingEnv(gym.Env):
         self.map_name      = map_name
         self.max_steps     = max_steps
         self.reward_config = reward_config or RewardConfig()
-        self.spawn_index = spawn_index
+        self.spawn_index        = spawn_index
+        self.spawn_index_offset = spawn_index_offset
         self.verbose       = verbose
 
         # ── Gymnasium spaces ───────────────────────────────────────────────────
@@ -326,12 +349,16 @@ class CarlaLaneKeepingEnv(gym.Env):
             bp.set_attribute("color", "255,0,0")   # red for visibility
 
         if self.spawn_index is not None:
-            transform = self._spawn_points[self.spawn_index]
+            effective_index = _compute_effective_spawn_index(
+                self.spawn_index, self.spawn_index_offset, len(self._spawn_points)
+            )
+            transform = self._spawn_points[effective_index]
             for attempt in range(5):
                 vehicle = self._world.try_spawn_actor(bp, transform)
                 if vehicle is not None:
                     logger.debug(
                         f"Vehicle spawned at fixed spawn_index={self.spawn_index} "
+                        f"(effective index {effective_index}, offset {self.spawn_index_offset}) "
                         f"(attempt {attempt+1}): "
                         f"x={transform.location.x:.1f}, y={transform.location.y:.1f}"
                     )
@@ -339,6 +366,7 @@ class CarlaLaneKeepingEnv(gym.Env):
                     return vehicle
             raise RuntimeError(
                 f"Failed to spawn vehicle at fixed spawn_index={self.spawn_index} "
+                f"(effective index {effective_index}, offset {self.spawn_index_offset}) "
                 f"after 5 attempts. That spawn point stayed occupied."
             )
 

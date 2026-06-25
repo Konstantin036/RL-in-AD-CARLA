@@ -76,7 +76,7 @@ def load_config(config_path: str) -> dict:
 
 # ── Environment factory ────────────────────────────────────────────────────────
 
-def make_env(cfg: dict, log_dir: str, seed: int = 0):
+def make_env(cfg: dict, log_dir: str, seed: int = 0, is_eval: bool = False):
     """
     Factory function that creates and wraps the CARLA environment.
 
@@ -92,6 +92,15 @@ def make_env(cfg: dict, log_dir: str, seed: int = 0):
         The caller (train()) computes an algorithm-scoped log directory
         (e.g. results/logs/sac/) so runs for different algorithms never
         collide. Reading it directly from cfg here would lose that.
+
+    Why is_eval?
+        train() runs a train_env and an eval_env simultaneously against
+        the same CARLA server. If both used the identical deterministic
+        spawn_index, whichever one currently has a live vehicle there
+        would permanently block the other (confirmed via live testing).
+        is_eval shifts the eval environment to a different spawn point
+        via spawn_index_offset, so both stay deterministic without
+        contending for the same spot.
     """
     env_cfg    = cfg["env"]
     reward_cfg = cfg["reward"]
@@ -114,9 +123,10 @@ def make_env(cfg: dict, log_dir: str, seed: int = 0):
         max_steps     = env_cfg["max_steps"],
         reward_config = rc,
         action_smooth = env_cfg["action_smooth"],
-        seed          = env_cfg["seed"] + seed,
-        spawn_index   = env_cfg.get("spawn_index"),
-        verbose       = False,
+        seed               = env_cfg["seed"] + seed,
+        spawn_index        = env_cfg.get("spawn_index"),
+        spawn_index_offset = 1 if is_eval else 0,
+        verbose            = False,
     )
 
     # Monitor wrapper: records episode reward/length to CSV
@@ -197,7 +207,7 @@ def train(
     # A separate environment for periodic evaluation during training.
     # This gives us unbiased performance estimates on fresh episodes.
     logger.info("Creating evaluation environment ...")
-    eval_env = DummyVecEnv([lambda: make_env(cfg, log_dir=log_dir, seed=100)])
+    eval_env = DummyVecEnv([lambda: make_env(cfg, log_dir=log_dir, seed=100, is_eval=True)])
 
     # ── Build agent (PPO / SAC / DDPG / TD3 via the registry) ─────────────────
     if resume_path is not None:

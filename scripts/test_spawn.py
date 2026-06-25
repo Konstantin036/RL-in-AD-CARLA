@@ -17,7 +17,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import carla
 
-from carla_env.env import _check_spawn_index_in_range, _compute_spectator_transform
+from carla_env.env import (
+    _check_spawn_index_in_range,
+    _compute_spectator_transform,
+    _compute_effective_spawn_index,
+)
 
 
 def separator(title=""):
@@ -96,12 +100,29 @@ def test_spectator_transform_distance():
     print("  ✓ PASSED")
 
 
+def test_effective_spawn_index_offset_and_wraparound():
+    separator("6. _compute_effective_spawn_index() offset and wraparound")
+    # No offset: unchanged
+    assert _compute_effective_spawn_index(0, 0, 372) == 0
+    assert _compute_effective_spawn_index(5, 0, 372) == 5
+    # Offset within range: simple addition
+    assert _compute_effective_spawn_index(0, 1, 372) == 1
+    assert _compute_effective_spawn_index(5, 3, 372) == 8
+    # Offset wraps around at the end of the list
+    assert _compute_effective_spawn_index(371, 1, 372) == 0
+    print("  train (offset=0) at spawn_index=0  ->", _compute_effective_spawn_index(0, 0, 372))
+    print("  eval  (offset=1) at spawn_index=0  ->", _compute_effective_spawn_index(0, 1, 372))
+    print("  eval  (offset=1) at spawn_index=371 (wraps) ->", _compute_effective_spawn_index(371, 1, 372))
+    print("  ✓ PASSED")
+
+
 if __name__ == "__main__":
     test_spawn_index_none_is_always_valid()
     test_spawn_index_in_range()
     test_spawn_index_out_of_range()
     test_spectator_transform_is_behind_and_above()
     test_spectator_transform_distance()
+    test_effective_spawn_index_offset_and_wraparound()
     print(f"\n{'='*55}")
     print("  ALL TESTS PASSED")
     print(f"{'='*55}\n")
