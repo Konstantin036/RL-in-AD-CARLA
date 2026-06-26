@@ -145,7 +145,9 @@ def write_csv(results: List[EpisodeResult], path: str) -> None:
     """Write one row per EpisodeResult to a CSV at the given path."""
     import csv
 
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    dirname = os.path.dirname(path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
