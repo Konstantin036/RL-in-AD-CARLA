@@ -12,7 +12,9 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from agent.evaluate import EpisodeResult, EvaluationSummary, compute_summary
+from agent.evaluate import (
+    EpisodeResult, EvaluationSummary, compute_summary, load_model,
+)
 
 
 def sep(title=""):
@@ -92,6 +94,19 @@ def test_compute_summary_all_failure_reasons():
     print("  ✓ PASSED")
 
 
+# ── Test 4: load_model() rejects an unknown algorithm before touching CARLA ───
+
+def test_load_model_unknown_algo():
+    sep("load_model() — unknown algorithm raises before any CARLA/file access")
+    try:
+        load_model("dqn", "/nonexistent/path.zip")
+        assert False, "Expected ValueError for unknown algo 'dqn'"
+    except ValueError as e:
+        assert "dqn" in str(e)
+        print("  Correctly raised:", e)
+        print("  ✓ PASSED")
+
+
 def main():
     print("=" * 60)
     print("  EVALUATE.PY OFFLINE TESTS")
@@ -101,6 +116,7 @@ def main():
     test_compute_summary_basic()
     test_compute_summary_all_success()
     test_compute_summary_all_failure_reasons()
+    test_load_model_unknown_algo()
 
     print(f"\n{'='*60}")
     print("  All evaluate.py tests passed.")

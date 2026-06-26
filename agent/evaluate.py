@@ -103,3 +103,37 @@ def compute_summary(results: List[EpisodeResult]) -> EvaluationSummary:
         mean_length=sum(lengths) / n,
         termination_counts=termination_counts,
     )
+
+
+# ── Model loading ────────────────────────────────────────────────────────────────
+
+def load_model(algo_name: str, checkpoint_path: str):
+    """
+    Load a saved SB3 checkpoint for the given algorithm.
+
+    No `env` argument is passed to `.load()` — this script only calls
+    `model.predict()`, which needs the policy's weights, not a live
+    training environment. Validating algo_name happens before this
+    function touches the filesystem or CARLA, so a typo in --algo fails
+    immediately with a clear message instead of partway through setup.
+
+    Parameters
+    ----------
+    algo_name       : one of agent.algorithms.ALGORITHMS keys
+    checkpoint_path : path to a saved .zip file
+
+    Returns
+    -------
+    An SB3 BaseAlgorithm subclass instance (PPO, SAC, DDPG, or TD3).
+    """
+    from agent.algorithms import ALGORITHMS
+
+    if algo_name not in ALGORITHMS:
+        raise ValueError(
+            "Unknown algorithm '{}'. Available: {}".format(
+                algo_name, sorted(ALGORITHMS.keys())
+            )
+        )
+
+    algo_cls = ALGORITHMS[algo_name]
+    return algo_cls.load(checkpoint_path)
