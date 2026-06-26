@@ -176,3 +176,150 @@ def print_summary(summary: EvaluationSummary) -> None:
     for reason, count in sorted(summary.termination_counts.items()):
         print(f"    {reason:15s} {count}")
     print("=" * 55 + "\n")
+
+
+# ── Environment construction ──────────────────────────────────────────────────
+
+def build_env(cfg: dict):
+    """
+    Build a single, unwrapped CarlaLaneKeepingEnv from config.
+
+    Unlike agent/train.py's make_env(), this does not wrap with
+    Monitor/DummyVecEnv (those exist for SB3's training internals, not
+    needed for a plain evaluation loop) and uses spawn_index_offset=0
+    (a single env here, so there's no train/eval spawn contention to
+    avoid).
+    """
+    from carla_env.env import CarlaLaneKeepingEnv
+    from carla_env.reward import RewardConfig
+
+    env_cfg = cfg["env"]
+    rc = RewardConfig.from_dict(cfg["reward"])
+
+    return CarlaLaneKeepingEnv(
+        host          = env_cfg["host"],
+        port          = env_cfg["port"],
+        map_name      = env_cfg["map_name"],
+        max_steps     = env_cfg["max_steps"],
+        reward_config = rc,
+        action_smooth = env_cfg["action_smooth"],
+        seed          = env_cfg["seed"],
+        spawn_index   = env_cfg.get("spawn_index"),
+        spawn_index_offset = 0,
+        verbose       = False,
+    )
+
+
+# ── Episode runner ────────────────────────────────────────────────────────────────
+
+def run_episode(env, model, episode_num: int) -> EpisodeResult:
+    """
+    Run exactly one episode with the model's deterministic (mean) action,
+    until the environment reports terminated or truncated.
+    """
+    obs, _info = env.reset()
+    total_reward = 0.0
+    lateral_distances = []
+    step_count = 0
+    termination_reason = ""
+
+    terminated = False
+    truncated = False
+    while not terminated and not truncated:
+        action, _state = model.predict(obs, deterministic=True)
+        obs, reward, terminated, truncated, info = env.step(action)
+        total_reward += reward
+        lateral_distances.append(abs(info["lateral_distance"]))
+        step_count += 1
+        termination_reason = info["termination_reason"]
+
+    mean_lateral = sum(lateral_distances) / len(lateral_distances)
+
+    return EpisodeResult(
+        episode_num=episode_num,
+        reward=total_reward,
+        length=step_count,
+        mean_lateral_distance=mean_lateral,
+        termination_reason=termination_reason,
+    )
+
+
+def run_evaluation(env, model, n_episodes: int) -> List[EpisodeResult]:
+    """
+    Run n_episodes evaluation episodes and return the list of results.
+
+    Extension point for future work: a multi-checkpoint comparison script
+    can call this once per checkpoint and combine the results, without
+    touching run_episode() or compute_summary().
+    """
+    results = []
+    for i in range(1, n_episodes + 1):
+        result = run_episode(env, model, episode_num=i)
+        logger.info(
+            f"Episode {i}/{n_episodes}: reward={result.reward:.2f} "
+            f"length={result.length} "
+            f"mean_lateral_distance={result.mean_lateral_distance:.4f} "
+            f"reason={result.termination_reason}"
+        )
+        results.append(result)
+    return results
+
+
+# ── CLI entry point ────────────────────────────────────────────────────────────────
+
+def main():
+    import argparse
+    import time
+    import yaml
+
+    parser = argparse.ArgumentParser(
+        description="Evaluate a saved RL checkpoint by running it for N "
+                     "deterministic episodes. Only run this when no "
+                     "train.py process is connected to the same CARLA "
+                     "server (see this file's module docstring)."
+    )
+    parser.add_argument("--algo", required=True, choices=["ppo", "sac", "ddpg", "td3"],
+                         help="Algorithm the checkpoint was trained with.")
+    parser.add_argument("--checkpoint", required=True,
+                         help="Path to a saved .zip checkpoint.")
+    parser.add_argument("--episodes", type=int, default=20,
+                         help="Number of evaluation episodes to run (default: 20).")
+    parser.add_argument("--config", default="configs/config.yaml",
+                         help="Path to config.yaml (default: configs/config.yaml).")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.checkpoint):
+        raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
+
+    logger.warning(
+        "evaluate.py is about to connect to CARLA. Do not run this while "
+        "a train.py process is connected to the same server (see this "
+        "file's module docstring)."
+    )
+
+    with open(args.config, "r") as f:
+        cfg = yaml.safe_load(f)
+
+    model = load_model(args.algo, args.checkpoint)
+    logger.info(f"Loaded {args.algo.upper()} model from: {args.checkpoint}")
+
+    env = build_env(cfg)
+    try:
+        results = run_evaluation(env, model, args.episodes)
+    finally:
+        env.close()
+
+    summary = compute_summary(results)
+    print_summary(summary)
+
+    checkpoint_stem = os.path.splitext(os.path.basename(args.checkpoint))[0]
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    csv_path = os.path.join(
+        cfg["paths"]["log_dir"], args.algo, "eval_runs",
+        f"eval_{checkpoint_stem}_{timestamp}.csv",
+    )
+    write_csv(results, csv_path)
+
+
+if __name__ == "__main__":
+    main()
