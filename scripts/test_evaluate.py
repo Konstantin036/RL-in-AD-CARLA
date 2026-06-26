@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from agent.evaluate import (
     EpisodeResult, EvaluationSummary, compute_summary, load_model,
-    write_csv, print_summary,
+    write_csv, print_summary, compute_sleep_duration,
 )
 
 
@@ -152,6 +152,22 @@ def test_print_summary():
     print("  ✓ PASSED")
 
 
+# ── Test 7: compute_sleep_duration() — --real-time pacing helper ───────────────
+
+def test_compute_sleep_duration():
+    sep("compute_sleep_duration() — real-time pacing helper")
+    # Step finished faster than the target tick duration: sleep the remainder.
+    assert abs(compute_sleep_duration(0.01, 0.05) - 0.04) < 1e-9
+    # Step took exactly the target duration: no sleep needed.
+    assert compute_sleep_duration(0.05, 0.05) == 0.0
+    # Step took longer than the target duration: never sleep a negative amount.
+    assert compute_sleep_duration(0.08, 0.05) == 0.0
+    print("  compute_sleep_duration(0.01, 0.05) ->", compute_sleep_duration(0.01, 0.05))
+    print("  compute_sleep_duration(0.05, 0.05) ->", compute_sleep_duration(0.05, 0.05))
+    print("  compute_sleep_duration(0.08, 0.05) ->", compute_sleep_duration(0.08, 0.05))
+    print("  ✓ PASSED")
+
+
 def main():
     print("=" * 60)
     print("  EVALUATE.PY OFFLINE TESTS")
@@ -164,6 +180,7 @@ def main():
     test_load_model_unknown_algo()
     test_write_csv()
     test_print_summary()
+    test_compute_sleep_duration()
 
     print(f"\n{'='*60}")
     print("  All evaluate.py tests passed.")

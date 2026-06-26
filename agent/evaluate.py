@@ -212,11 +212,31 @@ def build_env(cfg: dict):
 
 # ── Episode runner ────────────────────────────────────────────────────────────────
 
-def run_episode(env, model, episode_num: int) -> EpisodeResult:
+def compute_sleep_duration(elapsed_seconds: float, target_seconds: float) -> float:
+    """
+    How long to sleep after a step so it takes at least target_seconds of
+    real wall-clock time — used for --real-time pacing.
+
+    Pure function: easy to test without CARLA or an actual sleep call.
+    """
+    return max(0.0, target_seconds - elapsed_seconds)
+
+
+def run_episode(env, model, episode_num: int, real_time: bool = False) -> EpisodeResult:
     """
     Run exactly one episode with the model's deterministic (mean) action,
     until the environment reports terminated or truncated.
+
+    real_time: if True, pace each step to take at least DELTA_SECONDS
+        (carla_env/env.py's fixed simulation timestep, 0.05s) of real
+        wall-clock time, so the episode plays out at the same speed you'd
+        see in the CARLA spectator view. Default False — without it,
+        CARLA ticks as fast as the client/server can process, which is
+        faster than real-time on most hardware.
     """
+    import time
+    from carla_env.env import DELTA_SECONDS
+
     obs, _info = env.reset()
     total_reward = 0.0
     lateral_distances = []
@@ -226,12 +246,16 @@ def run_episode(env, model, episode_num: int) -> EpisodeResult:
     terminated = False
     truncated = False
     while not terminated and not truncated:
+        step_start = time.time()
         action, _state = model.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = env.step(action)
         total_reward += reward
         lateral_distances.append(abs(info["lateral_distance"]))
         step_count += 1
         termination_reason = info["termination_reason"]
+        if real_time:
+            elapsed = time.time() - step_start
+            time.sleep(compute_sleep_duration(elapsed, DELTA_SECONDS))
 
     mean_lateral = sum(lateral_distances) / len(lateral_distances)
 
@@ -244,7 +268,7 @@ def run_episode(env, model, episode_num: int) -> EpisodeResult:
     )
 
 
-def run_evaluation(env, model, n_episodes: int) -> List[EpisodeResult]:
+def run_evaluation(env, model, n_episodes: int, real_time: bool = False) -> List[EpisodeResult]:
     """
     Run n_episodes evaluation episodes and return the list of results.
 
@@ -254,7 +278,7 @@ def run_evaluation(env, model, n_episodes: int) -> List[EpisodeResult]:
     """
     results = []
     for i in range(1, n_episodes + 1):
-        result = run_episode(env, model, episode_num=i)
+        result = run_episode(env, model, episode_num=i, real_time=real_time)
         logger.info(
             f"Episode {i}/{n_episodes}: reward={result.reward:.2f} "
             f"length={result.length} "
@@ -286,6 +310,11 @@ def main():
                          help="Number of evaluation episodes to run (default: 20).")
     parser.add_argument("--config", default="configs/config.yaml",
                          help="Path to config.yaml (default: configs/config.yaml).")
+    parser.add_argument("--real-time", action="store_true",
+                         help="Pace evaluation to match real wall-clock time "
+                              "(~0.05s/step), e.g. to watch the car drive at "
+                              "normal speed in the CARLA spectator view. "
+                              "Default: off (runs as fast as possible).")
     args = parser.parse_args()
 
     if not os.path.exists(args.checkpoint):
@@ -305,7 +334,7 @@ def main():
 
     env = build_env(cfg)
     try:
-        results = run_evaluation(env, model, args.episodes)
+        results = run_evaluation(env, model, args.episodes, real_time=args.real_time)
     finally:
         env.close()
 
