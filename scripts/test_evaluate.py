@@ -9,11 +9,14 @@ Run from project root:
 
 import sys
 import os
+import tempfile
+import csv
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from agent.evaluate import (
     EpisodeResult, EvaluationSummary, compute_summary, load_model,
+    write_csv, print_summary,
 )
 
 
@@ -107,6 +110,48 @@ def test_load_model_unknown_algo():
         print("  ✓ PASSED")
 
 
+# ── Test 5: write_csv() produces one row per episode ───────────────────────────────
+
+def test_write_csv():
+    sep("write_csv() — one row per episode, correct columns")
+    results = [
+        EpisodeResult(episode_num=1, reward=100.0, length=1000,
+                      mean_lateral_distance=0.10, termination_reason="timeout"),
+        EpisodeResult(episode_num=2, reward=20.0, length=400,
+                      mean_lateral_distance=0.50, termination_reason="collision"),
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        csv_path = os.path.join(tmpdir, "eval_test.csv")
+        write_csv(results, csv_path)
+
+        assert os.path.exists(csv_path)
+        with open(csv_path, "r") as f:
+            rows = list(csv.DictReader(f))
+
+        assert len(rows) == 2
+        assert rows[0]["episode_num"] == "1"
+        assert rows[0]["reward"] == "100.0"
+        assert rows[0]["length"] == "1000"
+        assert rows[0]["mean_lateral_distance"] == "0.1"
+        assert rows[0]["termination_reason"] == "timeout"
+        assert rows[1]["termination_reason"] == "collision"
+    print("  CSV written and verified at:", csv_path)
+    print("  ✓ PASSED")
+
+
+# ── Test 6: print_summary() runs without error and reports key numbers ────────
+
+def test_print_summary():
+    sep("print_summary() — produces readable console output")
+    summary = EvaluationSummary(
+        n_episodes=4, mean_reward=72.5, std_reward=31.79,
+        mean_lateral_distance=0.2375, success_rate=0.75, mean_length=850.0,
+        termination_counts={"timeout": 3, "collision": 1},
+    )
+    print_summary(summary)   # smoke test: must not raise
+    print("  ✓ PASSED")
+
+
 def main():
     print("=" * 60)
     print("  EVALUATE.PY OFFLINE TESTS")
@@ -117,6 +162,8 @@ def main():
     test_compute_summary_all_success()
     test_compute_summary_all_failure_reasons()
     test_load_model_unknown_algo()
+    test_write_csv()
+    test_print_summary()
 
     print(f"\n{'='*60}")
     print("  All evaluate.py tests passed.")

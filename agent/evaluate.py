@@ -137,3 +137,40 @@ def load_model(algo_name: str, checkpoint_path: str):
 
     algo_cls = ALGORITHMS[algo_name]
     return algo_cls.load(checkpoint_path)
+
+
+# ── Output: CSV and console report ────────────────────────────────────────────────
+
+def write_csv(results: List[EpisodeResult], path: str) -> None:
+    """Write one row per EpisodeResult to a CSV at the given path."""
+    import csv
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            "episode_num", "reward", "length",
+            "mean_lateral_distance", "termination_reason",
+        ])
+        for r in results:
+            writer.writerow([
+                r.episode_num, r.reward, r.length,
+                r.mean_lateral_distance, r.termination_reason,
+            ])
+    logger.info(f"Wrote {len(results)} episode rows to: {path}")
+
+
+def print_summary(summary: EvaluationSummary) -> None:
+    """Print a human-readable evaluation report to the console."""
+    print("\n" + "=" * 55)
+    print("  EVALUATION SUMMARY")
+    print("=" * 55)
+    print(f"  Episodes:              {summary.n_episodes}")
+    print(f"  Mean reward:           {summary.mean_reward:.2f} (+/- {summary.std_reward:.2f})")
+    print(f"  Mean lateral distance: {summary.mean_lateral_distance:.4f} m")
+    print(f"  Success rate:          {summary.success_rate * 100:.1f}%")
+    print(f"  Mean episode length:   {summary.mean_length:.1f} steps")
+    print("  Termination reasons:")
+    for reason, count in sorted(summary.termination_counts.items()):
+        print(f"    {reason:15s} {count}")
+    print("=" * 55 + "\n")
