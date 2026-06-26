@@ -1,0 +1,105 @@
+"""
+evaluate.py
+-----------
+Standalone evaluation script — load a saved checkpoint for any supported
+algorithm (PPO/SAC/DDPG/TD3) and measure how well it drives.
+
+Unlike agent/train.py's built-in EvalCallback (which only runs against
+whatever model is currently in memory, every eval_freq steps, and stops
+existing once training ends), this script can be pointed at any saved
+.zip checkpoint, any time, independent of training.
+
+IMPORTANT — do not run this while training is live:
+    This script connects its own CARLA client to the same server
+    agent/train.py uses, and calls env.close() on exit (which disables
+    CARLA's synchronous mode). Running this alongside a live train.py
+    process risks the same world-disruption crash documented in
+    carla_env/env.py — both clients ticking/closing the same shared
+    world at once. Only run this when no train.py process is connected
+    to the CARLA server.
+
+How to run (once training is stopped):
+    python agent/evaluate.py --algo sac --checkpoint results/checkpoints/sac/.../best_model/best_model.zip --episodes 20
+
+What it produces:
+    Console summary: mean/std reward, mean lateral distance, success
+    rate, mean episode length, termination-reason counts.
+    CSV: results/logs/<algo>/eval_runs/eval_<checkpoint_stem>_<timestamp>.csv
+"""
+
+import os
+import sys
+import logging
+from dataclasses import dataclass
+from typing import List
+
+# ── Path setup ─────────────────────────────────────────────────────────────────
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+# ── Result types ────────────────────────────────────────────────────────────────
+
+@dataclass
+class EpisodeResult:
+    """One evaluation episode's outcome."""
+    episode_num: int
+    reward: float
+    length: int
+    mean_lateral_distance: float   # mean(|lateral_distance_m|) over the episode
+    termination_reason: str        # "timeout" | "collision" | "off_road" | "wrong_heading"
+
+
+@dataclass
+class EvaluationSummary:
+    """Aggregate statistics across a full evaluation run."""
+    n_episodes: int
+    mean_reward: float
+    std_reward: float
+    mean_lateral_distance: float
+    success_rate: float            # fraction with termination_reason == "timeout"
+    mean_length: float
+    termination_counts: dict       # e.g. {"timeout": 18, "collision": 2}
+
+
+# ── Pure aggregation function (no CARLA, no I/O — easy to test offline) ────────
+
+def compute_summary(results: List[EpisodeResult]) -> EvaluationSummary:
+    """
+    Reduce a list of EpisodeResult into one EvaluationSummary.
+
+    Pure function: same input always produces the same output, no side
+    effects. This is what makes it testable without CARLA — see
+    scripts/test_evaluate.py.
+    """
+    n = len(results)
+    rewards = [r.reward for r in results]
+    lateral_distances = [r.mean_lateral_distance for r in results]
+    lengths = [r.length for r in results]
+
+    mean_reward = sum(rewards) / n
+    variance = sum((r - mean_reward) ** 2 for r in rewards) / n
+    std_reward = variance ** 0.5
+
+    termination_counts = {}
+    for r in results:
+        termination_counts[r.termination_reason] = (
+            termination_counts.get(r.termination_reason, 0) + 1
+        )
+
+    success_count = termination_counts.get("timeout", 0)
+
+    return EvaluationSummary(
+        n_episodes=n,
+        mean_reward=mean_reward,
+        std_reward=std_reward,
+        mean_lateral_distance=sum(lateral_distances) / n,
+        success_rate=success_count / n,
+        mean_length=sum(lengths) / n,
+        termination_counts=termination_counts,
+    )
