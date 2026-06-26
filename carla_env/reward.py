@@ -87,6 +87,26 @@ class RewardConfig:
     # Set to 0.0 to disable.
     step_penalty: float = -0.05
 
+    @classmethod
+    def from_dict(cls, reward_cfg: dict) -> "RewardConfig":
+        """
+        Build a RewardConfig from configs/config.yaml's `reward:` block.
+
+        Single source of truth for the YAML-dict -> dataclass mapping —
+        both agent/train.py and agent/evaluate.py call this so the
+        mapping only has to be correct in one place.
+        """
+        return cls(
+            w_center         = reward_cfg["w_center"],
+            w_speed          = reward_cfg["w_speed"],
+            w_heading        = reward_cfg["w_heading"],
+            w_smooth         = reward_cfg["w_smooth"],
+            target_speed_kmh = reward_cfg["target_speed_kmh"],
+            sigma_speed      = reward_cfg["sigma_speed"],
+            terminal_penalty = reward_cfg["terminal_penalty"],
+            step_penalty     = reward_cfg["step_penalty"],
+        )
+
 
 # ── Reward component data class ────────────────────────────────────────────────
 

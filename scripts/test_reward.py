@@ -144,6 +144,33 @@ def test_smoothness_toggle():
     print("  ✓ PASSED")
 
 
+# ── Test: RewardConfig.from_dict() ─────────────────────────────────────────────
+
+def test_reward_config_from_dict():
+    sep("RewardConfig.from_dict()")
+    reward_cfg = {
+        "w_center":         1.0,
+        "w_speed":          1.5,
+        "w_heading":        0.5,
+        "w_smooth":         0.5,
+        "target_speed_kmh": 30.0,
+        "sigma_speed":      10.0,
+        "terminal_penalty": -10.0,
+        "step_penalty":     -0.1,
+    }
+    rc = RewardConfig.from_dict(reward_cfg)
+    assert rc.w_center == 1.0
+    assert rc.w_speed == 1.5
+    assert rc.w_heading == 0.5
+    assert rc.w_smooth == 0.5
+    assert rc.target_speed_kmh == 30.0
+    assert rc.sigma_speed == 10.0
+    assert rc.terminal_penalty == -10.0
+    assert rc.step_penalty == -0.1
+    print("  RewardConfig.from_dict() ->", rc)
+    print("  ✓ PASSED")
+
+
 # ── Test 4: Full reward at representative states ───────────────────────────────
 
 def test_full_reward():
@@ -283,6 +310,7 @@ def main():
     test_heading()
     test_smoothness()
     test_smoothness_toggle()
+    test_reward_config_from_dict()
     test_full_reward()
     test_termination()
     test_reward_range()
