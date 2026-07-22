@@ -674,24 +674,26 @@ def plot_radar_chart(outdir, window=20):
         print("  [skip] radar_chart — need at least 2 algorithms with data")
         return
 
-    # ── Normalise each metric to [0, 1] across observed algorithms ───────────
-    def norm_metric(key, invert=False):
-        vals = [raw[a][key] for a in raw]
-        mn, mx = min(vals), max(vals)
-        if mx == mn:
-            return {a: 1.0 for a in raw}
-        if invert:
-            return {a: 1.0 - (raw[a][key] - mn) / (mx - mn) for a in raw}
-        return {a: (raw[a][key] - mn) / (mx - mn) for a in raw}
+    # ── Absolute normalisation with fixed reference points ────────────────────
+    # Each metric maps to [0, 1] using domain-appropriate reference values so
+    # that small inter-algorithm differences are not artificially amplified.
+    MAX_REWARD    = 3400.0    # theoretical max (1000 steps × max reward/step)
+    MAX_LATERAL   = 3.5       # lane boundary in metres
+    MAX_STEPS     = 1_000_000 # training budget
 
-    norm_reward   = norm_metric("reward")
-    norm_lateral  = norm_metric("lateral", invert=True)   # lower lateral = better
-    norm_success  = norm_metric("success")
-    norm_speed    = norm_metric("speed_adh")
-    norm_smooth   = norm_metric("smoothness")
-    norm_sample   = norm_metric("sample_eff")
+    def score(algo):
+        d = raw[algo]
+        return [
+            d["reward"]    / MAX_REWARD,              # reward quality
+            1.0 - d["lateral"]  / MAX_LATERAL,        # lane centering (lower = better)
+            d["success"],                              # success rate (already 0-1)
+            d["speed_adh"],                            # speed adherence (already 0-1)
+            d["smoothness"],                           # smoothness (already 0-1)
+            d["sample_eff"],                           # sample efficiency (already 0-1)
+        ]
 
     algos = list(raw.keys())
+    scores = {algo: score(algo) for algo in algos}
 
     # ── Build polar plot ──────────────────────────────────────────────────────
     angles = [n / float(N) * 2 * np.pi for n in range(N)]
@@ -699,22 +701,19 @@ def plot_radar_chart(outdir, window=20):
 
     fig, ax = plt.subplots(figsize=(7, 7), subplot_kw=dict(polar=True))
 
-    for algo in algos:
-        values = [
-            norm_reward[algo],
-            norm_lateral[algo],
-            norm_success[algo],
-            norm_speed[algo],
-            norm_smooth[algo],
-            norm_sample[algo],
-        ]
-        values += values[:1]
-        color = COLORS[algo]
-        ax.plot(angles, values, color=color, linewidth=2.0, label=algo.upper())
-        ax.fill(angles, values, color=color, alpha=0.12)
+    # Draw fills first (largest area behind, smallest in front so both visible)
+    area_order = sorted(algos, key=lambda a: sum(scores[a]), reverse=True)
+    for algo in area_order:
+        vals = scores[algo] + scores[algo][:1]
+        ax.fill(angles, vals, color=COLORS[algo], alpha=0.20)
 
-        # Mark individual points
-        ax.scatter(angles[:-1], values[:-1], color=color, s=50, zorder=5)
+    # Draw lines and points on top of all fills
+    hatches = ["///", "..."]   # distinct hatch per algorithm for print-safe distinction
+    for i, algo in enumerate(algos):
+        vals = scores[algo] + scores[algo][:1]
+        color = COLORS[algo]
+        ax.plot(angles, vals, color=color, linewidth=2.5, label=algo.upper(), zorder=4)
+        ax.scatter(angles[:-1], vals[:-1], color=color, s=60, zorder=5, edgecolors="white", linewidths=0.8)
 
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(categories, fontsize=10)
@@ -724,16 +723,15 @@ def plot_radar_chart(outdir, window=20):
     ax.grid(color="white", linewidth=0.8)
     ax.set_facecolor("#F8F8F8")
 
-    ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1), fontsize=10)
+    ax.legend(loc="upper right", bbox_to_anchor=(1.32, 1.12), fontsize=10)
     ax.set_title(
-        "Multi-Metric Algorithm Comparison\n(normalised — outer = better)",
+        "Multi-Metric Algorithm Comparison\n(absolute scale — outer = better)",
         fontsize=12, fontweight="bold", pad=20,
     )
 
-    # Annotation: note on normalization
     fig.text(0.5, 0.01,
-             "All axes normalised 0→1 across available algorithms. "
-             "Higher = better on every axis.",
+             "Fixed reference scales: reward /3400, lateral /3.5 m, "
+             "speed adherence & smoothness [0→1], sample efficiency [0→1].",
              ha="center", fontsize=8, color="#666666", style="italic")
 
     fig.tight_layout()
