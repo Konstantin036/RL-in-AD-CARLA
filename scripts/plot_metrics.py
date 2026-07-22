@@ -497,7 +497,7 @@ def plot_termination_breakdown(outdir, window=20):
         mpatches.Patch(color=reason_colors[r], label=r.replace("_", " ").title())
         for r in reason_order
     ]
-    ax.legend(handles=patches, loc="lower right", fontsize=7,
+    ax.legend(handles=patches, loc="center right", fontsize=7,
               handlelength=1.0, handleheight=0.8,
               borderpad=0.4, labelspacing=0.3, handletextpad=0.4)
 
