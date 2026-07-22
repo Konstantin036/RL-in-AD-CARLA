@@ -91,8 +91,8 @@ Script: `python agent/evaluate.py --algo <algo> --checkpoint <path> --episodes 2
 
 | Algorithm | Training Steps | Mean Reward | Std | Lateral Dist. | Success Rate | Episodes |
 |-----------|---------------|-------------|-----|---------------|-------------|---------|
-| **PPO** | 681k | **3280.89** | ±0.09 | 0.0238 m | **100%** | 20 |
-| **SAC** | 1039k | **3289.21** | ±0.89 | **0.0179 m** | **100%** | 20 |
+| **PPO** | ~1M | **3280.89** | ±0.09 | 0.0238 m | **100%** | 20 |
+| **SAC** | ~1M | **3325.06** | ±0.09 | **0.0152 m** | **100%** | 20 |
 | DDPG | — | — | — | — | — | not trained |
 | TD3 | — | — | — | — | — | not trained |
 
@@ -102,7 +102,7 @@ All episodes ran the full 1000 steps (50 simulated seconds) at approximately 30 
 
 ![Algorithm Performance Comparison](figures/comparison_bars.png)
 
-Both trained algorithms achieve **100% success rate** in deterministic evaluation. SAC shows slightly better lane centering (0.018 m vs 0.024 m mean lateral distance from centre), likely because it received ~50% more training steps (1039k vs 681k).
+Both trained algorithms achieve **100% success rate** in deterministic evaluation. SAC shows better lane centering (0.015 m vs 0.024 m mean lateral distance from centre). Both algorithms were evaluated at ~1M training steps under identical protocol.
 
 ### 5.3 Training Curves
 
