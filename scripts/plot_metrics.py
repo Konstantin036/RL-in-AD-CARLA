@@ -259,7 +259,7 @@ def plot_training_curves(outdir, smooth_window=20):
         ax.set_xlabel("Training steps (×1 000)")
         ax.set_ylabel("Episode reward")
         ax.set_title("{} — Training curve".format(algo.upper()))
-        ax.legend(loc="upper left")
+        ax.legend(loc="lower right")
 
         # Annotate final rolling mean value
         final_val = smooth[-1]
