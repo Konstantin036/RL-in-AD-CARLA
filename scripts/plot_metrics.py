@@ -516,6 +516,233 @@ def plot_termination_breakdown(outdir, window=20):
     print("  Saved: {}".format(path))
 
 
+# ── Figure 5: Sample efficiency ────────────────────────────────────────────────
+
+def plot_sample_efficiency(outdir, smooth_window=20, threshold=2500):
+    """
+    All algorithms on a single plot — rolling-mean reward vs training timestep.
+    A horizontal threshold line shows when each algorithm first achieves a
+    'capable policy'. This directly compares exploration efficiency.
+    """
+    available = {}
+    for algo in ALGORITHMS:
+        data = load_training_data(algo)
+        if data:
+            available[algo] = data
+
+    if not available:
+        print("  [skip] sample_efficiency — no training data found")
+        return
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    first_cross = {}
+    for algo, data in available.items():
+        color = COLORS[algo]
+        ts = [t / 1000 for t in data["timesteps"]]
+        rw = data["rewards"]
+        smooth = _rolling_mean(rw, smooth_window)
+
+        ax.plot(ts, smooth, color=color, linewidth=2.0, label=algo.upper())
+        ax.fill_between(ts, smooth, alpha=0.07, color=color)
+
+        # Find first crossing of threshold
+        for t, r in zip(ts, smooth):
+            if r >= threshold:
+                first_cross[algo] = t
+                break
+
+    # Threshold line
+    ax.axhline(threshold, color="#555555", linestyle="--", linewidth=1.2,
+               label="Threshold ({:,})".format(threshold))
+
+    # Annotate crossing points
+    for algo, t_cross in first_cross.items():
+        color = COLORS[algo]
+        ax.axvline(t_cross, color=color, linestyle=":", linewidth=1.0, alpha=0.7)
+        ax.annotate(
+            "{}\n{:.0f}k".format(algo.upper(), t_cross),
+            xy=(t_cross, threshold),
+            xytext=(t_cross + 10, threshold - 200),
+            fontsize=8, color=color, fontweight="bold",
+            arrowprops=dict(arrowstyle="->", color=color, lw=1.0),
+        )
+
+    ax.set_xlabel("Training steps (×1 000)")
+    ax.set_ylabel("Episode reward (rolling mean, w={})".format(smooth_window))
+    ax.set_title("Sample Efficiency — Steps to Capable Policy\n"
+                 "(vertical lines = first crossing of reward threshold)",
+                 fontsize=12, fontweight="bold")
+    ax.set_ylim(bottom=0)
+    ax.legend(loc="lower right")
+
+    fig.tight_layout()
+    path = os.path.join(outdir, "sample_efficiency.png")
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    print("  Saved: {}".format(path))
+
+
+# ── Figure 6: Multi-metric radar chart ────────────────────────────────────────
+
+def plot_radar_chart(outdir, window=20):
+    """
+    Normalized spider/radar chart comparing algorithms across six dimensions:
+    reward quality, lane centering, success rate, speed adherence,
+    steering smoothness, and sample efficiency.
+    Higher is always better on every axis.
+    """
+    SPEED_TARGET = 30.0
+    SAMPLE_EFF_THRESHOLD = 2500
+
+    categories = [
+        "Reward\nQuality",
+        "Lane\nCentering",
+        "Success\nRate",
+        "Speed\nAdherence",
+        "Steering\nSmoothness",
+        "Sample\nEfficiency",
+    ]
+    N = len(categories)
+
+    # ── Gather raw values per algorithm ───────────────────────────────────────
+    raw = {}
+    for algo in ALGORITHMS:
+        eval_data = load_eval_data(algo)
+        train_data = load_training_data(algo)
+
+        if eval_data is None and train_data is None:
+            continue
+
+        # Reward quality — use mean reward from eval, or training fallback
+        if eval_data:
+            reward = eval_data["mean_reward"]
+            lateral = eval_data["mean_lateral"]
+            success = eval_data["success_rate"]
+        else:
+            rewards = train_data["rewards"][-window:]
+            laterals = train_data["laterals"][-window:]
+            reward = sum(rewards) / len(rewards)
+            lateral = sum(laterals) / len(laterals)
+            success = 1.0
+
+        # Speed adherence from training logs
+        speed_adh = None
+        if train_data:
+            speeds_window = train_data.get("speeds")
+            # Re-load for speed (not in the dict — read from raw CSV)
+            pattern = os.path.join(RESULTS_ROOT, "logs", algo, "*", "episode_log.csv")
+            paths = sorted(glob.glob(pattern))
+            all_rows = []
+            for p in paths:
+                rows = _read_csv(p)
+                all_rows.extend(rows)
+            if all_rows and "mean_speed_kmh" in all_rows[0]:
+                all_rows.sort(key=lambda r: int(r["timestep"]))
+                w_rows = all_rows[-window:]
+                speeds = [float(r["mean_speed_kmh"]) for r in w_rows]
+                mean_spd = sum(speeds) / len(speeds)
+                speed_adh = max(0.0, 1.0 - abs(mean_spd - SPEED_TARGET) / SPEED_TARGET)
+
+            # Smoothness
+            smoothness = None
+            if all_rows and "mean_smoothness" in all_rows[0]:
+                w_rows = all_rows[-window:]
+                sm = [float(r["mean_smoothness"]) for r in w_rows]
+                smoothness = sum(sm) / len(sm)
+
+        # Sample efficiency — normalise: 1 = very fast, 0 = never converged
+        se_step = None
+        if train_data:
+            smooth_rw = _rolling_mean(train_data["rewards"], window)
+            for ts, r in zip(train_data["timesteps"], smooth_rw):
+                if r >= SAMPLE_EFF_THRESHOLD:
+                    se_step = ts
+                    break
+        se_norm = max(0.0, 1.0 - (se_step / 1_000_000)) if se_step else 0.0
+
+        raw[algo] = {
+            "reward":    reward,
+            "lateral":   lateral,
+            "success":   success,
+            "speed_adh": speed_adh if speed_adh is not None else 0.5,
+            "smoothness": smoothness if smoothness is not None else 0.5,
+            "sample_eff": se_norm,
+        }
+
+    if len(raw) < 2:
+        print("  [skip] radar_chart — need at least 2 algorithms with data")
+        return
+
+    # ── Normalise each metric to [0, 1] across observed algorithms ───────────
+    def norm_metric(key, invert=False):
+        vals = [raw[a][key] for a in raw]
+        mn, mx = min(vals), max(vals)
+        if mx == mn:
+            return {a: 1.0 for a in raw}
+        if invert:
+            return {a: 1.0 - (raw[a][key] - mn) / (mx - mn) for a in raw}
+        return {a: (raw[a][key] - mn) / (mx - mn) for a in raw}
+
+    norm_reward   = norm_metric("reward")
+    norm_lateral  = norm_metric("lateral", invert=True)   # lower lateral = better
+    norm_success  = norm_metric("success")
+    norm_speed    = norm_metric("speed_adh")
+    norm_smooth   = norm_metric("smoothness")
+    norm_sample   = norm_metric("sample_eff")
+
+    algos = list(raw.keys())
+
+    # ── Build polar plot ──────────────────────────────────────────────────────
+    angles = [n / float(N) * 2 * np.pi for n in range(N)]
+    angles += angles[:1]
+
+    fig, ax = plt.subplots(figsize=(7, 7), subplot_kw=dict(polar=True))
+
+    for algo in algos:
+        values = [
+            norm_reward[algo],
+            norm_lateral[algo],
+            norm_success[algo],
+            norm_speed[algo],
+            norm_smooth[algo],
+            norm_sample[algo],
+        ]
+        values += values[:1]
+        color = COLORS[algo]
+        ax.plot(angles, values, color=color, linewidth=2.0, label=algo.upper())
+        ax.fill(angles, values, color=color, alpha=0.12)
+
+        # Mark individual points
+        ax.scatter(angles[:-1], values[:-1], color=color, s=50, zorder=5)
+
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(categories, fontsize=10)
+    ax.set_ylim(0, 1)
+    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
+    ax.set_yticklabels(["0.25", "0.50", "0.75", "1.00"], fontsize=7, color="#888888")
+    ax.grid(color="white", linewidth=0.8)
+    ax.set_facecolor("#F8F8F8")
+
+    ax.legend(loc="upper right", bbox_to_anchor=(1.3, 1.1), fontsize=10)
+    ax.set_title(
+        "Multi-Metric Algorithm Comparison\n(normalised — outer = better)",
+        fontsize=12, fontweight="bold", pad=20,
+    )
+
+    # Annotation: note on normalization
+    fig.text(0.5, 0.01,
+             "All axes normalised 0→1 across available algorithms. "
+             "Higher = better on every axis.",
+             ha="center", fontsize=8, color="#666666", style="italic")
+
+    fig.tight_layout()
+    path = os.path.join(outdir, "radar_chart.png")
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    print("  Saved: {}".format(path))
+
+
 # ── Entry point ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -546,6 +773,8 @@ def main():
     plot_comparison_bars(args.outdir, window=args.window)
     plot_lateral_progress(args.outdir, smooth_window=args.smooth)
     plot_termination_breakdown(args.outdir, window=args.window)
+    plot_sample_efficiency(args.outdir, smooth_window=args.smooth)
+    plot_radar_chart(args.outdir, window=args.window)
     print("Done.")
 
 

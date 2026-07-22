@@ -55,6 +55,22 @@ Distribution of episode termination reasons in deterministic evaluation. 100% of
 
 ---
 
+### Sample Efficiency
+
+All trained algorithms on a single axis — rolling-mean reward vs training timestep. The dashed threshold line marks a "capable policy" (reward ≥ 2500). Vertical markers show when each algorithm first crosses the threshold, quantifying **exploration efficiency**: how many environment interactions are needed before the policy becomes reliably useful.
+
+![Sample Efficiency](docs/figures/sample_efficiency.png)
+
+---
+
+### Multi-Metric Radar Chart
+
+Normalized spider chart comparing algorithms across six dimensions simultaneously. All axes are scaled 0→1 where outer = better. **Reward quality** and **lane centering** reflect final deterministic evaluation performance; **speed adherence** and **steering smoothness** reflect driving comfort from training logs; **sample efficiency** reflects how quickly the algorithm converged. This view reveals trade-offs that single-metric comparisons hide.
+
+![Radar Chart](docs/figures/radar_chart.png)
+
+---
+
 ## System Architecture
 
 ### Observation Space (4D)
@@ -184,6 +200,25 @@ python scripts/plot_metrics.py
 # Monitor training
 tensorboard --logdir results/logs
 ```
+
+---
+
+## Exploration vs Exploitation
+
+Each algorithm takes a fundamentally different approach to balancing exploration and exploitation:
+
+| Algorithm | Type | Policy | Exploration Mechanism | Adaptivity |
+|-----------|------|--------|-----------------------|------------|
+| **PPO** | On-policy | Stochastic | Entropy bonus (`ent_coef=0.05`) — penalises low-entropy policies | Fixed — manual tuning required |
+| **SAC** | Off-policy | Stochastic | Automatic entropy tuning — targets a learned entropy level | **Automatic** — self-adjusting throughout training |
+| **DDPG** | Off-policy | Deterministic | Gaussian action noise (σ=0.1) added at execution time | Fixed noise — no entropy |
+| **TD3** | Off-policy | Deterministic | Gaussian noise + target policy smoothing + clipped double Q | Fixed noise + variance reduction |
+
+Key implications:
+- **PPO** must explore through its stochastic policy; too little entropy → stand-still local optimum; too much → erratic driving
+- **SAC** automatically finds the right exploration level, making it more robust to hyperparameter choices
+- **DDPG/TD3** separate exploration (noise) from policy (deterministic), which can be more stable but requires tuning the noise schedule
+- Off-policy algorithms (**SAC, DDPG, TD3**) reuse past experience via a replay buffer, making them more **sample efficient** than on-policy PPO
 
 ---
 
