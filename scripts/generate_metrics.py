@@ -49,11 +49,11 @@ def load_eval_csv(algo):
     paths = sorted(glob.glob(pattern))
     if not paths:
         return None, None
-    # Pick the file with the most data rows (most evaluation episodes)
+    # Pick the file with the most episodes; break ties by most recent filename
     best_path, best_rows = None, []
-    for p in paths:
+    for p in sorted(paths):
         rows = _read_csv(p)
-        if len(rows) > len(best_rows):
+        if len(rows) >= len(best_rows):
             best_rows, best_path = rows, p
     return best_rows, best_path
 

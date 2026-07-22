@@ -103,11 +103,11 @@ def load_training_data(algo):
     if not paths:
         return None
 
-    # Pick the file with the most data rows
+    # Pick the file with the most episodes; break ties by most recent filename
     best_rows, best_path = [], None
-    for p in paths:
+    for p in sorted(paths):
         rows = _read_csv(p)
-        if len(rows) > len(best_rows):
+        if len(rows) >= len(best_rows):
             best_rows, best_path = rows, p
 
     if not best_rows:
@@ -143,10 +143,11 @@ def load_eval_data(algo):
     if not paths:
         return None
 
+    # Pick the file with the most episodes; break ties by most recent filename
     best_rows, best_path = [], None
-    for p in paths:
+    for p in sorted(paths):
         rows = _read_csv(p)
-        if len(rows) > len(best_rows):
+        if len(rows) >= len(best_rows):
             best_rows, best_path = rows, p
 
     if not best_rows:
@@ -354,10 +355,11 @@ def plot_comparison_bars(outdir, window=20):
     bars = ax.bar(labels, laterals, color=colors, alpha=0.85, width=0.5)
     ax.set_title("Mean Lateral Distance (m)\n(lower = better lane centering)")
     ax.set_ylabel("Distance from lane centre (m)")
-    ax.set_ylim(bottom=0)
+    top = max(laterals) * 1.5 if laterals else 0.5
+    ax.set_ylim(bottom=0, top=max(top, 0.05))
     for bar, lat in zip(bars, laterals):
         ax.text(
-            bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.005,
+            bar.get_x() + bar.get_width() / 2, bar.get_height() + top * 0.04,
             "{:.3f} m".format(lat), ha="center", va="bottom", fontsize=9,
             fontweight="bold"
         )
