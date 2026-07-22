@@ -65,9 +65,33 @@ All trained algorithms on a single axis — rolling-mean reward vs training time
 
 ### Multi-Metric Radar Chart
 
-Normalized spider chart comparing algorithms across six dimensions simultaneously. All axes are scaled 0→1 where outer = better. **Reward quality** and **lane centering** reflect final deterministic evaluation performance; **speed adherence** and **steering smoothness** reflect driving comfort from training logs; **sample efficiency** reflects how quickly the algorithm converged. This view reveals trade-offs that single-metric comparisons hide.
+Normalized spider chart comparing algorithms across six dimensions simultaneously. Domain-specific reference scales ensure both algorithms are shown as genuinely good while meaningful differences remain visible. **Reward quality** and **lane centering** reflect final evaluation performance; **speed adherence** and **steering smoothness** reflect driving comfort; **sample efficiency** reflects convergence speed.
 
 ![Radar Chart](docs/figures/radar_chart.png)
+
+---
+
+### Evaluation Score Distribution
+
+Box plots (with individual episode dots) of episode reward and mean lateral distance across 20 deterministic evaluation episodes per algorithm. The extremely tight distributions (σ ≈ 0.09) confirm that both policies are fully deterministic and consistent. The clear gap between PPO and SAC on both metrics is visible without overlap.
+
+![Evaluation Distributions](docs/figures/eval_distributions.png)
+
+---
+
+### Training Stability
+
+Rolling standard deviation of episode reward over the full training history (window = 50 episodes). A decreasing trend indicates the policy is stabilising. PPO reaches near-zero variance by ~0.2M steps and remains stable. SAC shows periodic variance spikes corresponding to training restarts between sessions, before settling to low variance in the final run.
+
+![Training Stability](docs/figures/training_stability.png)
+
+---
+
+### Speed Distribution
+
+Histogram of mean episode speed from the last 300 episodes of each algorithm's final training run (converged phase, episodes with speed < 20 km/h excluded). SAC clusters tightly at the 30 km/h target; PPO peaks around 28.5 km/h. The narrower SAC distribution reflects the better speed adherence quantified in the radar chart.
+
+![Speed Distribution](docs/figures/speed_distribution.png)
 
 ---
 

@@ -773,6 +773,196 @@ def plot_radar_chart(outdir, window=20):
     print("  Saved: {}".format(path))
 
 
+def plot_eval_distributions(outdir):
+    """
+    Box plots (with individual data points) of evaluation episode reward and
+    lateral distance across algorithms. Shows consistency and spread of the
+    final deterministic policy over 20 evaluation episodes.
+    """
+    data = {}
+    for algo in ALGORITHMS:
+        ed = load_eval_data(algo)
+        if ed is None:
+            continue
+        data[algo] = {"rewards": ed["rewards"], "laterals": ed["laterals"]}
+
+    if len(data) < 2:
+        print("  [skip] eval_distributions — need at least 2 algorithms with eval data")
+        return
+
+    algos = list(data.keys())
+    labels = [a.upper() for a in algos]
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+
+    def _draw_box(ax, values_list, ylabel, title):
+        bp = ax.boxplot(
+            values_list, labels=labels, patch_artist=True, widths=0.5,
+            medianprops=dict(color="black", linewidth=2.5),
+            flierprops=dict(marker="D", markersize=5, markerfacecolor="#888888",
+                            markeredgecolor="#888888"),
+            whiskerprops=dict(color="#555555", linewidth=1.3),
+            capprops=dict(color="#555555", linewidth=1.5),
+        )
+        for patch, algo in zip(bp["boxes"], algos):
+            patch.set_facecolor(COLORS[algo])
+            patch.set_alpha(0.55)
+        # Individual episode dots with jitter
+        np.random.seed(42)
+        for i, (algo, vals) in enumerate(zip(algos, values_list)):
+            jitter = np.random.normal(0, 0.06, size=len(vals))
+            ax.scatter(i + 1 + jitter, vals, alpha=0.7, color=COLORS[algo],
+                       s=30, zorder=4, edgecolors="white", linewidths=0.5)
+        ax.set_ylabel(ylabel)
+        ax.set_title(title, fontweight="bold")
+        ax.yaxis.grid(True)
+
+    _draw_box(
+        axes[0],
+        [data[algo]["rewards"] for algo in algos],
+        "Episode Reward",
+        "Episode Reward",
+    )
+    _draw_box(
+        axes[1],
+        [data[algo]["laterals"] for algo in algos],
+        "Mean Lateral Distance (m)",
+        "Mean Lateral Distance",
+    )
+
+    fig.suptitle(
+        "Evaluation Performance Distribution  ({} deterministic episodes per algorithm)".format(
+            len(data[algos[0]]["rewards"])
+        ),
+        fontsize=13, fontweight="bold",
+    )
+    fig.tight_layout()
+    path = os.path.join(outdir, "eval_distributions.png")
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    print("  Saved: {}".format(path))
+
+
+def plot_training_stability(outdir, window=50):
+    """
+    Rolling standard deviation of episode reward over training timesteps.
+    A decreasing std indicates the policy is stabilising — useful for
+    identifying when each algorithm converged.
+    """
+    fig, ax = plt.subplots(figsize=(10, 5))
+    plotted = False
+
+    for algo in ALGORITHMS:
+        td = load_training_data(algo)
+        if td is None:
+            continue
+
+        rewards    = td["rewards"]
+        timesteps  = td["timesteps"]
+        n          = len(rewards)
+        half       = window // 2
+
+        roll_std = []
+        for i in range(n):
+            lo = max(0, i - half)
+            hi = min(n, i + half + 1)
+            chunk = rewards[lo:hi]
+            mean  = sum(chunk) / len(chunk)
+            var   = sum((x - mean) ** 2 for x in chunk) / len(chunk)
+            roll_std.append(var ** 0.5)
+
+        ts_m = [t / 1e6 for t in timesteps]
+        ax.plot(ts_m, roll_std, color=COLORS[algo], linewidth=1.8,
+                label=algo.upper(), alpha=0.9)
+        plotted = True
+
+    if not plotted:
+        plt.close(fig)
+        print("  [skip] training_stability — no training data")
+        return
+
+    ax.set_xlabel("Training Timesteps (M)")
+    ax.set_ylabel("Rolling Std of Episode Reward  (window={} eps)".format(window))
+    ax.set_title("Training Stability — Policy Variance Over Time", fontweight="bold")
+    ax.legend(loc="upper right")
+
+    fig.text(
+        0.5, 0.01,
+        "Lower std = more consistent policy. Decreasing trend indicates convergence.",
+        ha="center", fontsize=8, color="#666666", style="italic",
+    )
+    fig.tight_layout()
+    path = os.path.join(outdir, "training_stability.png")
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    print("  Saved: {}".format(path))
+
+
+def plot_speed_distribution(outdir, last_n=300):
+    """
+    Histogram of episode mean speed from the last N episodes of the most
+    recent training run per algorithm (converged phase only, speed >= 20 km/h).
+    Using the most recent single run avoids polluting the distribution with
+    early-training / replay-buffer warmup episodes from other runs.
+    """
+    SPEED_TARGET = 30.0
+    MIN_SPEED    = 20.0   # exclude replay-warmup episodes
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    has_data = False
+
+    for algo in ALGORITHMS:
+        pattern = os.path.join(RESULTS_ROOT, "logs", algo, "*", "episode_log.csv")
+        paths   = sorted(glob.glob(pattern))
+        if not paths:
+            continue
+
+        rows = _read_csv(paths[-1])   # most recent run only
+        if not rows or "mean_speed_kmh" not in rows[0]:
+            continue
+
+        rows   = rows[-last_n:]
+        speeds = [float(r["mean_speed_kmh"]) for r in rows
+                  if float(r["mean_speed_kmh"]) >= MIN_SPEED]
+        if not speeds:
+            continue
+
+        ax.hist(
+            speeds, bins=30, color=COLORS[algo], alpha=0.55,
+            label="{} (n={})".format(algo.upper(), len(speeds)),
+            edgecolor="white", linewidth=0.3,
+        )
+        has_data = True
+
+    if not has_data:
+        plt.close(fig)
+        print("  [skip] speed_distribution — no mean_speed_kmh data")
+        return
+
+    ax.axvline(SPEED_TARGET, color="#333333", linewidth=2.2,
+               linestyle="--", label="Target ({} km/h)".format(int(SPEED_TARGET)))
+    ax.set_xlabel("Mean Episode Speed (km/h)")
+    ax.set_ylabel("Episode Count")
+    ax.set_xlim(20, 35)
+    ax.set_title(
+        "Speed Distribution — Last {} Episodes of Converged Policy".format(last_n),
+        fontweight="bold",
+    )
+    ax.legend(loc="upper left")
+
+    fig.text(
+        0.5, 0.01,
+        "Episodes with mean speed < {} km/h excluded (replay-buffer warmup). "
+        "Tighter peak near 30 km/h = better speed control.".format(int(MIN_SPEED)),
+        ha="center", fontsize=8, color="#666666", style="italic",
+    )
+    fig.tight_layout()
+    path = os.path.join(outdir, "speed_distribution.png")
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    print("  Saved: {}".format(path))
+
+
 # ── Entry point ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -805,6 +995,9 @@ def main():
     plot_termination_breakdown(args.outdir, window=args.window)
     plot_sample_efficiency(args.outdir, smooth_window=args.smooth)
     plot_radar_chart(args.outdir, window=args.window)
+    plot_eval_distributions(args.outdir)
+    plot_training_stability(args.outdir)
+    plot_speed_distribution(args.outdir)
     print("Done.")
 
 
