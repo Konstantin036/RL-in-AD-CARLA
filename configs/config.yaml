@@ -53,7 +53,13 @@ ppo:
   gamma:            0.99        # discount factor
   gae_lambda:       0.95        # GAE lambda for advantage estimation
   clip_range:       0.2         # PPO clipping parameter
-  ent_coef:         0.01        # entropy coefficient (exploration)
+  ent_coef:         0.05        # entropy coefficient (exploration)
+                                 #   raised from 0.01 — PPO converged to a
+                                 #   "stand still" local optimum (speed~0,
+                                 #   reward plateau ~1880/ep) in the
+                                 #   2026-06-26 run; SAC's auto entropy
+                                 #   tuning escaped the same optimum, PPO's
+                                 #   fixed low ent_coef did not
   vf_coef:          0.5         # value function loss coefficient
   max_grad_norm:    0.5         # gradient clipping
   verbose:          1           # SB3 verbosity (0=silent, 1=info, 2=debug)
