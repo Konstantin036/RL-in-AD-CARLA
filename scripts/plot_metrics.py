@@ -87,6 +87,31 @@ def _rolling_mean(values, window):
     return result
 
 
+def _load_all_training_rows(algo):
+    """
+    Return all raw episode CSV rows for the algorithm, merged across runs,
+    sorted by timestep and deduplicated (same logic as generate_metrics.py).
+    Returns None if no CSV files found.
+    """
+    pattern = os.path.join(RESULTS_ROOT, "logs", algo, "*", "episode_log.csv")
+    paths = sorted(glob.glob(pattern))
+    if not paths:
+        return None
+
+    all_rows = []
+    for p in paths:
+        rows = _read_csv(p)
+        all_rows.extend(rows)
+
+    if not all_rows:
+        return None
+
+    seen = {}
+    for r in all_rows:
+        seen[int(r["timestep"])] = r
+    return sorted(seen.values(), key=lambda r: int(r["timestep"]))
+
+
 def load_training_data(algo):
     """
     Return the full training history for the algorithm by merging all
@@ -587,13 +612,16 @@ def plot_sample_efficiency(outdir, smooth_window=20, threshold=2500):
 
 def plot_radar_chart(outdir, window=20):
     """
-    Normalized spider/radar chart comparing algorithms across six dimensions:
-    reward quality, lane centering, success rate, speed adherence,
-    steering smoothness, and sample efficiency.
-    Higher is always better on every axis.
+    Spider/radar chart comparing algorithms across six dimensions.
+    Uses relative normalisation with floor=0.4 so that:
+      - the best algorithm on each axis reaches 1.0 (outer edge)
+      - the worst algorithm on each axis reaches 0.4 (visible, not zero)
+    This shows meaningful differences while both polygons remain clearly visible.
+    Data loading is consistent with generate_metrics.py.
     """
-    SPEED_TARGET = 30.0
-    SAMPLE_EFF_THRESHOLD = 2500
+    SPEED_TARGET       = 30.0
+    SAMPLE_EFF_THRESH  = 2500
+    FLOOR              = 0.4    # minimum polygon radius for worst value on each axis
 
     categories = [
         "Reward\nQuality",
@@ -605,68 +633,59 @@ def plot_radar_chart(outdir, window=20):
     ]
     N = len(categories)
 
-    # ── Gather raw values per algorithm ───────────────────────────────────────
+    # ── Collect raw metric values — same sources as generate_metrics.py ───────
     raw = {}
     for algo in ALGORITHMS:
-        eval_data = load_eval_data(algo)
-        train_data = load_training_data(algo)
+        eval_data  = load_eval_data(algo)
+        train_rows = _load_all_training_rows(algo)   # merged & sorted, same as gen_metrics
 
-        if eval_data is None and train_data is None:
+        if eval_data is None and train_rows is None:
             continue
 
-        # Reward quality — use mean reward from eval, or training fallback
+        # Performance from eval (preferred) or training fallback
         if eval_data:
-            reward = eval_data["mean_reward"]
+            reward  = eval_data["mean_reward"]
             lateral = eval_data["mean_lateral"]
             success = eval_data["success_rate"]
         else:
-            rewards = train_data["rewards"][-window:]
-            laterals = train_data["laterals"][-window:]
-            reward = sum(rewards) / len(rewards)
-            lateral = sum(laterals) / len(laterals)
+            rw = train_rows[-window:]
+            reward  = sum(float(r.get("episode_reward", r.get("reward", 0))) for r in rw) / len(rw)
+            lat_key = "mean_lateral_dist" if "mean_lateral_dist" in rw[0] else "mean_lateral_distance"
+            lateral = sum(float(r[lat_key]) for r in rw) / len(rw)
             success = 1.0
 
-        # Speed adherence from training logs
+        # Speed adherence and smoothness from last `window` training episodes
         speed_adh = None
-        if train_data:
-            speeds_window = train_data.get("speeds")
-            # Re-load for speed (not in the dict — read from raw CSV)
-            pattern = os.path.join(RESULTS_ROOT, "logs", algo, "*", "episode_log.csv")
-            paths = sorted(glob.glob(pattern))
-            all_rows = []
-            for p in paths:
-                rows = _read_csv(p)
-                all_rows.extend(rows)
-            if all_rows and "mean_speed_kmh" in all_rows[0]:
-                all_rows.sort(key=lambda r: int(r["timestep"]))
-                w_rows = all_rows[-window:]
-                speeds = [float(r["mean_speed_kmh"]) for r in w_rows]
-                mean_spd = sum(speeds) / len(speeds)
+        smoothness = None
+        if train_rows:
+            w = train_rows[-window:]
+            if "mean_speed_kmh" in w[0]:
+                speeds    = [float(r["mean_speed_kmh"]) for r in w]
+                mean_spd  = sum(speeds) / len(speeds)
                 speed_adh = max(0.0, 1.0 - abs(mean_spd - SPEED_TARGET) / SPEED_TARGET)
-
-            # Smoothness
-            smoothness = None
-            if all_rows and "mean_smoothness" in all_rows[0]:
-                w_rows = all_rows[-window:]
-                sm = [float(r["mean_smoothness"]) for r in w_rows]
+            if "mean_smoothness" in w[0]:
+                sm         = [float(r["mean_smoothness"]) for r in w]
                 smoothness = sum(sm) / len(sm)
 
-        # Sample efficiency — normalise: 1 = very fast, 0 = never converged
+        # Sample efficiency: 1 − (steps_to_threshold / 1M), 0 if never reached
         se_step = None
-        if train_data:
-            smooth_rw = _rolling_mean(train_data["rewards"], window)
-            for ts, r in zip(train_data["timesteps"], smooth_rw):
-                if r >= SAMPLE_EFF_THRESHOLD:
+        if train_rows:
+            reward_key = "episode_reward" if "episode_reward" in train_rows[0] else "reward"
+            rw_vals    = [float(r[reward_key]) for r in train_rows]
+            ts_vals    = [int(r["timestep"])   for r in train_rows]
+            smooth_rw  = _rolling_mean(rw_vals, window)
+            for ts, rm in zip(ts_vals, smooth_rw):
+                if rm >= SAMPLE_EFF_THRESH:
                     se_step = ts
                     break
-        se_norm = max(0.0, 1.0 - (se_step / 1_000_000)) if se_step else 0.0
+        se_norm = max(0.0, 1.0 - se_step / 1_000_000) if se_step else 0.0
 
         raw[algo] = {
-            "reward":    reward,
-            "lateral":   lateral,
-            "success":   success,
-            "speed_adh": speed_adh if speed_adh is not None else 0.5,
-            "smoothness": smoothness if smoothness is not None else 0.5,
+            "reward":     reward,
+            "lateral":    lateral,
+            "success":    success,
+            "speed_adh":  speed_adh  if speed_adh  is not None else 0.0,
+            "smoothness": smoothness if smoothness is not None else 0.0,
             "sample_eff": se_norm,
         }
 
@@ -674,26 +693,35 @@ def plot_radar_chart(outdir, window=20):
         print("  [skip] radar_chart — need at least 2 algorithms with data")
         return
 
-    # ── Absolute normalisation with fixed reference points ────────────────────
-    # Each metric maps to [0, 1] using domain-appropriate reference values so
-    # that small inter-algorithm differences are not artificially amplified.
-    MAX_REWARD    = 3400.0    # theoretical max (1000 steps × max reward/step)
-    MAX_LATERAL   = 3.5       # lane boundary in metres
-    MAX_STEPS     = 1_000_000 # training budget
-
-    def score(algo):
-        d = raw[algo]
-        return [
-            d["reward"]    / MAX_REWARD,              # reward quality
-            1.0 - d["lateral"]  / MAX_LATERAL,        # lane centering (lower = better)
-            d["success"],                              # success rate (already 0-1)
-            d["speed_adh"],                            # speed adherence (already 0-1)
-            d["smoothness"],                           # smoothness (already 0-1)
-            d["sample_eff"],                           # sample efficiency (already 0-1)
-        ]
-
     algos = list(raw.keys())
-    scores = {algo: score(algo) for algo in algos}
+
+    # ── Relative normalisation with floor ─────────────────────────────────────
+    # For each metric, best observed → 1.0, worst observed → FLOOR.
+    # Higher is always better (lateral is inverted first).
+    raw_scores = {
+        algo: [
+            raw[algo]["reward"],
+            1.0 - raw[algo]["lateral"] / 3.5,   # invert: lower lateral = better
+            raw[algo]["success"],
+            raw[algo]["speed_adh"],
+            raw[algo]["smoothness"],
+            raw[algo]["sample_eff"],
+        ]
+        for algo in algos
+    }
+
+    def norm_with_floor(metric_idx):
+        vals = [raw_scores[a][metric_idx] for a in algos]
+        mn, mx = min(vals), max(vals)
+        if mx == mn:
+            return {a: 1.0 for a in algos}
+        return {
+            a: FLOOR + (1.0 - FLOOR) * (raw_scores[a][metric_idx] - mn) / (mx - mn)
+            for a in algos
+        }
+
+    normed = [norm_with_floor(i) for i in range(N)]
+    scores = {algo: [normed[i][algo] for i in range(N)] for algo in algos}
 
     # ── Build polar plot ──────────────────────────────────────────────────────
     angles = [n / float(N) * 2 * np.pi for n in range(N)]
@@ -701,38 +729,42 @@ def plot_radar_chart(outdir, window=20):
 
     fig, ax = plt.subplots(figsize=(7, 7), subplot_kw=dict(polar=True))
 
-    # Draw fills first (largest area behind, smallest in front so both visible)
+    # Draw largest fill behind, smallest fill in front — both always visible
     area_order = sorted(algos, key=lambda a: sum(scores[a]), reverse=True)
     for algo in area_order:
         vals = scores[algo] + scores[algo][:1]
-        ax.fill(angles, vals, color=COLORS[algo], alpha=0.20)
+        ax.fill(angles, vals, color=COLORS[algo], alpha=0.22)
 
-    # Draw lines and points on top of all fills
-    hatches = ["///", "..."]   # distinct hatch per algorithm for print-safe distinction
-    for i, algo in enumerate(algos):
-        vals = scores[algo] + scores[algo][:1]
+    # Lines and scatter points on top
+    for algo in algos:
+        vals  = scores[algo] + scores[algo][:1]
         color = COLORS[algo]
         ax.plot(angles, vals, color=color, linewidth=2.5, label=algo.upper(), zorder=4)
-        ax.scatter(angles[:-1], vals[:-1], color=color, s=60, zorder=5, edgecolors="white", linewidths=0.8)
+        ax.scatter(angles[:-1], vals[:-1], color=color, s=60, zorder=5,
+                   edgecolors="white", linewidths=0.8)
 
+    # Reference rings labelled with actual meaning
+    ax.set_yticks([FLOOR, FLOOR + (1 - FLOOR) * 0.33,
+                   FLOOR + (1 - FLOOR) * 0.67, 1.0])
+    ax.set_yticklabels(["worst", "", "", "best"], fontsize=7, color="#888888")
+    ax.set_ylim(0, 1)
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(categories, fontsize=10)
-    ax.set_ylim(0, 1)
-    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
-    ax.set_yticklabels(["0.25", "0.50", "0.75", "1.00"], fontsize=7, color="#888888")
     ax.grid(color="white", linewidth=0.8)
     ax.set_facecolor("#F8F8F8")
 
     ax.legend(loc="upper right", bbox_to_anchor=(1.32, 1.12), fontsize=10)
     ax.set_title(
-        "Multi-Metric Algorithm Comparison\n(absolute scale — outer = better)",
+        "Multi-Metric Algorithm Comparison\n(relative scale — outer = better)",
         fontsize=12, fontweight="bold", pad=20,
     )
 
-    fig.text(0.5, 0.01,
-             "Fixed reference scales: reward /3400, lateral /3.5 m, "
-             "speed adherence & smoothness [0→1], sample efficiency [0→1].",
-             ha="center", fontsize=8, color="#666666", style="italic")
+    fig.text(
+        0.5, 0.01,
+        "Relative scale: best algorithm on each axis → outer edge, "
+        "worst → inner ring (floor={:.0f}%). Higher = better on all axes.".format(FLOOR * 100),
+        ha="center", fontsize=8, color="#666666", style="italic",
+    )
 
     fig.tight_layout()
     path = os.path.join(outdir, "radar_chart.png")
