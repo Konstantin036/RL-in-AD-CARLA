@@ -750,8 +750,8 @@ def plot_radar_chart(outdir, window=20):
     ax.set_yticklabels(["0.25", "0.50", "0.75", "1.00"], fontsize=7, color="#888888")
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(categories, fontsize=10)
-    ax.grid(color="#B0C4DE", linewidth=0.8)
-    ax.set_facecolor("#E8F0FE")
+    ax.grid(color="#AAAAAA", linewidth=0.9)
+    ax.set_facecolor("#F0F0F0")
 
     ax.legend(loc="upper right", bbox_to_anchor=(1.32, 1.12), fontsize=10)
     ax.set_title(
