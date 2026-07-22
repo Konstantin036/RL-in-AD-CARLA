@@ -1,7 +1,99 @@
 # CARLA Reinforcement Learning — Lane Keeping Agent
 
-A thesis-ready reinforcement learning project using CARLA 0.9.15 and PPO.
-The agent learns to keep a vehicle in its lane using low-dimensional state observations.
+Thesis project comparing four reinforcement learning algorithms for autonomous vehicle **lane keeping** in the CARLA 0.9.15 driving simulator.
+
+**Algorithms compared:** PPO · SAC · DDPG · TD3  
+**Framework:** Stable-Baselines3 2.0.0 · Gymnasium 0.28.1 · Python 3.7.16  
+**Simulator:** CARLA 0.9.15 · Town04 highway loop · Synchronous mode
+
+---
+
+## Results
+
+Both trained algorithms achieve **100% success rate** (full 50-second episodes, no crashes or off-road exits) under deterministic evaluation with identical protocol — 20 episodes, fixed spawn point.
+
+| Algorithm | Training Steps | Mean Reward | Lateral Distance | Success Rate |
+|-----------|---------------|-------------|-----------------|--------------|
+| **PPO** | ~1M | 3280.89 ± 0.09 | 0.024 m | 100% |
+| **SAC** | ~1M | 3325.06 ± 0.09 | **0.015 m** | 100% |
+| DDPG | — | — | — | not yet trained |
+| TD3 | — | — | — | not yet trained |
+
+---
+
+## Figures
+
+### Training Curves
+
+Episode reward over the full training history for each algorithm. Raw episodes (faded) and 20-episode rolling mean (solid). PPO shows steady improvement from ~1000 to ~3100 reward over 1M steps. SAC converges faster but with higher variance early in training (off-policy replay buffer warmup).
+
+![Training Curves](docs/figures/training_curves.png)
+
+---
+
+### Algorithm Performance Comparison
+
+Bar chart comparing final deterministic evaluation metrics: mean episode reward (±std), success rate, and mean lateral distance from lane centre. Lower lateral distance = better lane centering. Both algorithms reach 100% success; SAC achieves tighter centering (0.015 m vs 0.024 m).
+
+![Performance Comparison](docs/figures/comparison_bars.png)
+
+---
+
+### Lane Centering Progress
+
+Mean lateral distance from lane centre per episode throughout training. Both algorithms achieve sub-0.5 m centering (dashed line) early in training and approach the 0.1 m "excellent" threshold (dotted line) by the end. SAC reaches finer centering due to automatic entropy tuning.
+
+![Lane Centering Progress](docs/figures/lateral_progress.png)
+
+---
+
+### Episode Termination Breakdown
+
+Distribution of episode termination reasons in deterministic evaluation. 100% of episodes reach the maximum step count (timeout = success) for both PPO and SAC — no crashes, no off-road exits, no wrong-heading terminations.
+
+![Termination Breakdown](docs/figures/termination_breakdown.png)
+
+---
+
+## System Architecture
+
+### Observation Space (4D)
+
+| Index | Feature | Raw Range | Normalised |
+|-------|---------|-----------|------------|
+| 0 | lateral distance from lane centre | −3.5 … +3.5 m | −1 … +1 |
+| 1 | heading error | −π … +π rad | −1 … +1 |
+| 2 | vehicle speed | 0 … 80 km/h | 0 … +1 |
+| 3 | current steering | −1 … +1 | −1 … +1 |
+
+### Action Space (2D continuous)
+
+| Index | Action | Range | Effect |
+|-------|--------|-------|--------|
+| 0 | acceleration | −1 … +1 | > 0 → throttle, < 0 → brake |
+| 1 | steering | −1 … +1 | direct CARLA steer |
+
+Action smoothing: `smoothed = 0.6 × new + 0.4 × previous` — prevents oscillation from stochastic policy sampling.
+
+### Reward Function
+
+```
+r = 1.0 × (1 − |lateral| / 3.5)        # lane centering
+  + 1.5 × exp(−((speed − 30)² / 200))   # speed target 30 km/h
+  + 0.5 × (1 − |heading| / π)           # heading alignment
+  + 0.5 × smoothness                     # penalise abrupt steering
+  − 0.1                                  # per-step cost
+  − 10.0  (on collision or off-road)     # terminal penalty
+```
+
+### Termination Conditions
+
+| Condition | Type |
+|-----------|------|
+| `\|lateral\| ≥ 3.5 m` | terminated (off road) |
+| Collision sensor fired | terminated |
+| `\|heading\| ≥ 90°` | terminated |
+| 1000 steps reached | truncated (success) |
 
 ---
 
@@ -9,129 +101,108 @@ The agent learns to keep a vehicle in its lane using low-dimensional state obser
 
 ```
 carla_rl_project/
-├── carla_env/          # Gym environment (observation, action, reward)
-├── agent/              # PPO training and evaluation scripts
-├── scripts/            # Utility scripts (verify, spawn test, manual drive)
-├── configs/            # YAML configuration files
-├── results/            # Logs, checkpoints, plots (generated at runtime)
-├── docs/               # Architecture notes for thesis writing
-├── requirements.txt
-└── README.md
+├── carla_env/              # Gym environment
+│   ├── env.py              # CarlaLaneKeepingEnv
+│   ├── observation.py      # 4D state vector
+│   ├── action.py           # action smoother + CARLA control mapping
+│   ├── reward.py           # reward function + termination
+│   └── sensors.py          # collision sensor
+├── agent/
+│   ├── algorithms.py       # PPO / SAC / DDPG / TD3 registry
+│   ├── train.py            # multi-algorithm training entry point
+│   ├── evaluate.py         # deterministic evaluation script
+│   └── callbacks.py        # episode logger + checkpoint callbacks
+├── scripts/
+│   ├── generate_metrics.py # print comparison table from CSV data
+│   └── plot_metrics.py     # generate the four thesis figures
+├── configs/
+│   └── config.yaml         # all hyperparameters — single source of truth
+├── docs/
+│   ├── figures/            # thesis figures (committed, visible on GitHub)
+│   └── progress_report.md  # full progress report for thesis supervisor
+└── results/                # generated at runtime — not committed
+    ├── logs/{algo}/        # episode CSVs + TensorBoard logs
+    └── checkpoints/{algo}/ # model weights
 ```
 
 ---
 
-## System Requirements
+## Setup
+
+### Requirements
 
 - Ubuntu 22.04
 - CARLA 0.9.15
-- Python 3.8 (recommended for CARLA API compatibility)
-- GPU with at least 6GB VRAM (for running CARLA server)
+- Conda (Miniconda or Anaconda)
+- GPU with ≥ 6 GB VRAM
 
----
-
-## Setup Instructions
-
-### Step 1 — Clone or create the project folder
+### Environment
 
 ```bash
-cd ~
-git clone <your-repo-url> carla_rl_project
-cd carla_rl_project
-```
-
-### Step 2 — Create a Python virtual environment
-
-```bash
-python3.8 -m venv venv
-source venv/bin/activate
-```
-
-### Step 3 — Install Python dependencies
-
-```bash
-pip install --upgrade pip
+conda create -n carla915 python=3.7.16
+conda activate carla915
 pip install -r requirements.txt
 ```
 
-### Step 4 — Add the CARLA Python API to your environment
+The CARLA Python egg is added to the `carla915` conda environment's `sitecustomize.py` — no manual PYTHONPATH needed after setup.
 
-CARLA ships its own Python egg file. You need to point Python to it.
-Replace `/path/to/carla` with your actual CARLA installation path.
+### Launch CARLA
 
 ```bash
-# Option A: Add to your virtual environment permanently
-echo "export PYTHONPATH=$PYTHONPATH:/path/to/carla/PythonAPI/carla/dist/carla-0.9.15-py3.8-linux-x86_64.egg" >> venv/bin/activate
-
-# Option B: Add to your .bashrc (affects all terminals)
-echo "export PYTHONPATH=$PYTHONPATH:/path/to/carla/PythonAPI/carla/dist/carla-0.9.15-py3.8-linux-x86_64.egg" >> ~/.bashrc
-source ~/.bashrc
-```
-
-To verify the CARLA egg is reachable:
-```bash
-python -c "import carla; print('CARLA API version:', carla.__version__)"
-```
-
-### Step 5 — Launch the CARLA server
-
-Open a separate terminal and run:
-```bash
-cd /path/to/carla
-./CarlaUE4.sh -quality-level=Low -fps=20
-```
-
-Flags explained:
-- `-quality-level=Low` — faster rendering, good for training
-- `-fps=20` — cap server FPS (we use synchronous mode so this is a safety cap)
-
-### Step 6 — Verify the connection
-
-With CARLA running, in your project terminal:
-```bash
-python scripts/verify_carla.py
-```
-
-Expected output:
-```
-[INFO] Connecting to CARLA at localhost:2000 ...
-[INFO] Connected. Server version: 0.9.15
-[INFO] Loading map: Town03 ...
-[INFO] Map loaded: Town03
-[INFO] Available maps: [list of maps]
-[INFO] Number of spawn points: <N>
-[INFO] Weather: ClearNoon
-[INFO] Verification complete. CARLA is ready.
+cd /path/to/CARLA_0.9.15
+./CarlaUE4.sh -quality-level=Low -nosound
 ```
 
 ---
 
-## Running the Project (later phases)
+## Usage
 
 ```bash
-# Manual driving test
-python scripts/manual_drive.py
+conda activate carla915
+cd carla_rl_project
 
-# Train the PPO agent
-python agent/train.py --config configs/config.yaml
+# Train an algorithm (CARLA must be running)
+python agent/train.py --algo ppo
+python agent/train.py --algo sac
+python agent/train.py --algo ddpg
+python agent/train.py --algo td3
 
-# Evaluate a trained agent
-python agent/evaluate.py --checkpoint results/checkpoints/best_model
+# Resume from checkpoint
+python agent/train.py --algo ppo --resume results/checkpoints/ppo/.../final_model.zip
+
+# Evaluate a trained model (CARLA must be running)
+python agent/evaluate.py --algo ppo \
+    --checkpoint results/checkpoints/ppo/.../best_model/best_model.zip \
+    --episodes 20
+
+# Generate metrics table (no CARLA needed)
+python scripts/generate_metrics.py
+
+# Generate all figures (no CARLA needed)
+python scripts/plot_metrics.py
+
+# Monitor training
+tensorboard --logdir results/logs
 ```
 
 ---
 
-## Thesis Notes
+## Key Findings
 
-- The environment follows the OpenAI Gymnasium interface (`reset`, `step`, `render`).
-- Synchronous mode is used throughout for reproducibility.
-- All hyperparameters are stored in `configs/config.yaml`.
-- Training curves are logged to `results/logs/` and viewable with TensorBoard.
+1. **Both on-policy (PPO) and off-policy (SAC) RL solve lane keeping** with a 4D observation — no camera or lidar needed for a straight highway segment.
+2. **SAC achieves better lane centering** (0.015 m vs 0.024 m) due to automatic entropy tuning, which avoids the stand-still local optimum that PPO is vulnerable to.
+3. **PPO requires careful entropy tuning** — `ent_coef=0.05` was necessary after the agent collapsed to a stationary policy at `ent_coef=0.01`.
+4. **PPO converged at ~681k steps** — additional training to 1M steps did not improve the best checkpoint, suggesting early convergence.
+5. **Action smoothing (α=0.6) is critical** — without it, PPO's stochastic policy produces steering oscillations that destabilise the vehicle.
 
 ---
 
 ## References
 
-- CARLA Simulator: https://carla.org
-- Stable-Baselines3: https://stable-baselines3.readthedocs.io
-- Gymnasium: https://gymnasium.farama.org
+- [CARLA Simulator](https://carla.org)
+- [Stable-Baselines3](https://stable-baselines3.readthedocs.io)
+- [Gymnasium](https://gymnasium.farama.org)
+- [PPO — Schulman et al. 2017](https://arxiv.org/abs/1707.06347)
+- [SAC — Haarnoja et al. 2018](https://arxiv.org/abs/1801.01290)
+- [TD3 — Fujimoto et al. 2018](https://arxiv.org/abs/1802.09477)
+- [DDPG — Lillicrap et al. 2015](https://arxiv.org/abs/1509.02971)
