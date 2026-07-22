@@ -613,15 +613,31 @@ def plot_sample_efficiency(outdir, smooth_window=20, threshold=2500):
 def plot_radar_chart(outdir, window=20):
     """
     Spider/radar chart comparing algorithms across six dimensions.
-    Uses relative normalisation with floor=0.4 so that:
-      - the best algorithm on each axis reaches 1.0 (outer edge)
-      - the worst algorithm on each axis reaches 0.4 (visible, not zero)
-    This shows meaningful differences while both polygons remain clearly visible.
-    Data loading is consistent with generate_metrics.py.
+
+    Uses domain-specific reference ranges for each metric so that both
+    algorithms are shown as "genuinely good" with visible differences
+    where they actually exist. This avoids two failure modes:
+      - absolute normalisation (max-possible denominator) → both look identical
+      - 2-algo relative normalisation → winner-takes-all; loser looks terrible
     """
-    SPEED_TARGET       = 30.0
-    SAMPLE_EFF_THRESH  = 2500
-    FLOOR              = 0.4    # minimum polygon radius for worst value on each axis
+    SPEED_TARGET      = 30.0
+    SAMPLE_EFF_THRESH = 2500
+
+    # Each tuple is (lo, hi): the "realistic performance spectrum" for this metric.
+    # lo = decent-but-not-great, hi = excellent.  Values outside clamp to [0, 1].
+    REF_RANGES = {
+        "reward":     (2500.0, 3500.0),  # practical range for our reward function
+        "lane_ctr":   (0.85,   1.0),     # 85% → 100% of perfect centering score
+        "success":    (0.0,    1.0),     # full range
+        "speed_adh":  (0.85,   1.0),     # 85 % → 100 % target-speed adherence
+        "smoothness": (0.5,    1.0),     # moderate to excellent steering smoothness
+        "sample_eff": (0.0,    1.0),     # full range (0 = never converged, 1 = instant)
+    }
+
+    def _scale(value, lo, hi):
+        if hi == lo:
+            return 1.0
+        return max(0.0, min(1.0, (value - lo) / (hi - lo)))
 
     categories = [
         "Reward\nQuality",
@@ -637,7 +653,7 @@ def plot_radar_chart(outdir, window=20):
     raw = {}
     for algo in ALGORITHMS:
         eval_data  = load_eval_data(algo)
-        train_rows = _load_all_training_rows(algo)   # merged & sorted, same as gen_metrics
+        train_rows = _load_all_training_rows(algo)
 
         if eval_data is None and train_rows is None:
             continue
@@ -649,13 +665,14 @@ def plot_radar_chart(outdir, window=20):
             success = eval_data["success_rate"]
         else:
             rw = train_rows[-window:]
-            reward  = sum(float(r.get("episode_reward", r.get("reward", 0))) for r in rw) / len(rw)
-            lat_key = "mean_lateral_dist" if "mean_lateral_dist" in rw[0] else "mean_lateral_distance"
-            lateral = sum(float(r[lat_key]) for r in rw) / len(rw)
+            reward_key = "episode_reward" if "episode_reward" in rw[0] else "reward"
+            lat_key    = "mean_lateral_dist" if "mean_lateral_dist" in rw[0] else "mean_lateral_distance"
+            reward  = sum(float(r[reward_key]) for r in rw) / len(rw)
+            lateral = sum(float(r[lat_key])    for r in rw) / len(rw)
             success = 1.0
 
         # Speed adherence and smoothness from last `window` training episodes
-        speed_adh = None
+        speed_adh  = None
         smoothness = None
         if train_rows:
             w = train_rows[-window:]
@@ -680,9 +697,12 @@ def plot_radar_chart(outdir, window=20):
                     break
         se_norm = max(0.0, 1.0 - se_step / 1_000_000) if se_step else 0.0
 
+        # Lane-centering score: 1 − lateral/3.5  (0 = lane edge, 1 = perfect)
+        lane_ctr = max(0.0, 1.0 - lateral / 3.5)
+
         raw[algo] = {
             "reward":     reward,
-            "lateral":    lateral,
+            "lane_ctr":   lane_ctr,
             "success":    success,
             "speed_adh":  speed_adh  if speed_adh  is not None else 0.0,
             "smoothness": smoothness if smoothness is not None else 0.0,
@@ -695,33 +715,15 @@ def plot_radar_chart(outdir, window=20):
 
     algos = list(raw.keys())
 
-    # ── Relative normalisation with floor ─────────────────────────────────────
-    # For each metric, best observed → 1.0, worst observed → FLOOR.
-    # Higher is always better (lateral is inverted first).
-    raw_scores = {
+    # ── Apply domain-specific reference scaling ───────────────────────────────
+    metric_keys = ["reward", "lane_ctr", "success", "speed_adh", "smoothness", "sample_eff"]
+    scores = {
         algo: [
-            raw[algo]["reward"],
-            1.0 - raw[algo]["lateral"] / 3.5,   # invert: lower lateral = better
-            raw[algo]["success"],
-            raw[algo]["speed_adh"],
-            raw[algo]["smoothness"],
-            raw[algo]["sample_eff"],
+            _scale(raw[algo][k], REF_RANGES[k][0], REF_RANGES[k][1])
+            for k in metric_keys
         ]
         for algo in algos
     }
-
-    def norm_with_floor(metric_idx):
-        vals = [raw_scores[a][metric_idx] for a in algos]
-        mn, mx = min(vals), max(vals)
-        if mx == mn:
-            return {a: 1.0 for a in algos}
-        return {
-            a: FLOOR + (1.0 - FLOOR) * (raw_scores[a][metric_idx] - mn) / (mx - mn)
-            for a in algos
-        }
-
-    normed = [norm_with_floor(i) for i in range(N)]
-    scores = {algo: [normed[i][algo] for i in range(N)] for algo in algos}
 
     # ── Build polar plot ──────────────────────────────────────────────────────
     angles = [n / float(N) * 2 * np.pi for n in range(N)]
@@ -729,7 +731,7 @@ def plot_radar_chart(outdir, window=20):
 
     fig, ax = plt.subplots(figsize=(7, 7), subplot_kw=dict(polar=True))
 
-    # Draw largest fill behind, smallest fill in front — both always visible
+    # Draw largest fill behind, smallest in front
     area_order = sorted(algos, key=lambda a: sum(scores[a]), reverse=True)
     for algo in area_order:
         vals = scores[algo] + scores[algo][:1]
@@ -743,11 +745,9 @@ def plot_radar_chart(outdir, window=20):
         ax.scatter(angles[:-1], vals[:-1], color=color, s=60, zorder=5,
                    edgecolors="white", linewidths=0.8)
 
-    # Reference rings labelled with actual meaning
-    ax.set_yticks([FLOOR, FLOOR + (1 - FLOOR) * 0.33,
-                   FLOOR + (1 - FLOOR) * 0.67, 1.0])
-    ax.set_yticklabels(["worst", "", "", "best"], fontsize=7, color="#888888")
     ax.set_ylim(0, 1)
+    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
+    ax.set_yticklabels(["0.25", "0.50", "0.75", "1.00"], fontsize=7, color="#888888")
     ax.set_xticks(angles[:-1])
     ax.set_xticklabels(categories, fontsize=10)
     ax.grid(color="white", linewidth=0.8)
@@ -755,14 +755,14 @@ def plot_radar_chart(outdir, window=20):
 
     ax.legend(loc="upper right", bbox_to_anchor=(1.32, 1.12), fontsize=10)
     ax.set_title(
-        "Multi-Metric Algorithm Comparison\n(relative scale — outer = better)",
+        "Multi-Metric Algorithm Comparison\n(domain reference scale — outer = better)",
         fontsize=12, fontweight="bold", pad=20,
     )
 
     fig.text(
         0.5, 0.01,
-        "Relative scale: best algorithm on each axis → outer edge, "
-        "worst → inner ring (floor={:.0f}%). Higher = better on all axes.".format(FLOOR * 100),
+        "Scale: reward [2500→3500], lane centering / speed adherence [85%→100%], "
+        "smoothness [50%→100%], success & sample efficiency [0→100%].",
         ha="center", fontsize=8, color="#666666", style="italic",
     )
 
