@@ -87,6 +87,16 @@ class RewardConfig:
     # Set to 0.0 to disable.
     step_penalty: float = -0.05
 
+    # ── Stall termination ────────────────────────────────────────────────────────
+    # Terminates the episode (with terminal_penalty) if the car stays below
+    # stall_min_speed_kmh for stall_patience_steps consecutive steps.
+    # Prevents deterministic-policy algorithms (DDPG, TD3) from exploiting the
+    # stand-still local optimum where centering + smoothness rewards make
+    # staying stationary nearly as attractive as driving.
+    stall_enabled: bool       = True
+    stall_min_speed_kmh: float = 2.0   # below this speed counts as stalling
+    stall_patience_steps: int  = 100   # steps below min speed before termination
+
     @classmethod
     def from_dict(cls, reward_cfg: dict) -> "RewardConfig":
         """
@@ -97,14 +107,17 @@ class RewardConfig:
         mapping only has to be correct in one place.
         """
         return cls(
-            w_center         = reward_cfg["w_center"],
-            w_speed          = reward_cfg["w_speed"],
-            w_heading        = reward_cfg["w_heading"],
-            w_smooth         = reward_cfg["w_smooth"],
-            target_speed_kmh = reward_cfg["target_speed_kmh"],
-            sigma_speed      = reward_cfg["sigma_speed"],
-            terminal_penalty = reward_cfg["terminal_penalty"],
-            step_penalty     = reward_cfg["step_penalty"],
+            w_center             = reward_cfg["w_center"],
+            w_speed              = reward_cfg["w_speed"],
+            w_heading            = reward_cfg["w_heading"],
+            w_smooth             = reward_cfg["w_smooth"],
+            target_speed_kmh     = reward_cfg["target_speed_kmh"],
+            sigma_speed          = reward_cfg["sigma_speed"],
+            terminal_penalty     = reward_cfg["terminal_penalty"],
+            step_penalty         = reward_cfg["step_penalty"],
+            stall_enabled        = reward_cfg.get("stall_enabled",        True),
+            stall_min_speed_kmh  = reward_cfg.get("stall_min_speed_kmh",  2.0),
+            stall_patience_steps = reward_cfg.get("stall_patience_steps", 100),
         )
 
 
@@ -305,6 +318,45 @@ def compute_reward(
     return float(total), info
 
 
+# ── Stall detector ────────────────────────────────────────────────────────────
+
+class StallDetector:
+    """
+    Counts consecutive steps where the car's speed is below a threshold.
+    When the count reaches patience_steps, signals a stall termination.
+
+    Owned by CarlaLaneKeepingEnv — instantiated once, reset() called at
+    the start of every episode, update() called every step().
+
+    Why a class instead of a function?
+        Stall detection requires state (the running count). Keeping that
+        state here rather than in env.py means the logic is fully contained
+        in reward.py and can be unit-tested independently.
+    """
+
+    def __init__(self, cfg: RewardConfig):
+        self.enabled        = cfg.stall_enabled
+        self.min_speed_kmh  = cfg.stall_min_speed_kmh
+        self.patience_steps = cfg.stall_patience_steps
+        self._slow_steps    = 0
+
+    def reset(self):
+        self._slow_steps = 0
+
+    def update(self, speed_kmh: float) -> bool:
+        """
+        Call every step with the current speed.
+        Returns True when the car has been stalled long enough to terminate.
+        """
+        if not self.enabled:
+            return False
+        if speed_kmh < self.min_speed_kmh:
+            self._slow_steps += 1
+        else:
+            self._slow_steps = 0
+        return self._slow_steps >= self.patience_steps
+
+
 # ── Termination condition checker ─────────────────────────────────────────────
 
 def check_termination(
@@ -314,6 +366,7 @@ def check_termination(
     max_steps: int = 1000,
     max_lateral_m: float = 3.5,
     max_heading_deg: float = 90.0,
+    stall_flag: bool = False,
 ) -> tuple:
     """
     Decide whether the current episode should end.
@@ -343,6 +396,10 @@ def check_termination(
         max_lateral_m:  lateral distance threshold for off-road
         max_heading_deg: heading error threshold in degrees
     """
+    # ── Stall ──────────────────────────────────────────────────────────────────
+    if stall_flag:
+        return True, False, "stall"
+
     # ── Collision ──────────────────────────────────────────────────────────────
     if collision_flag:
         return True, False, "collision"

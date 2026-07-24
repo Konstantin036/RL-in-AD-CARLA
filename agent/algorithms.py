@@ -27,7 +27,7 @@ Note on DQN:
 import numpy as np
 from typing import Optional
 from stable_baselines3 import PPO, SAC, DDPG, TD3
-from stable_baselines3.common.noise import NormalActionNoise
+from stable_baselines3.common.noise import NormalActionNoise, OrnsteinUhlenbeckActionNoise
 
 
 # ── Registry ────────────────────────────────────────────────────────────────────
@@ -102,9 +102,16 @@ def _build_kwargs(algo_name: str, algo_cfg: dict, action_space) -> dict:
     if algo_name in _NOISE_ALGOS:
         n_actions = action_space.shape[-1]
         sigma = algo_cfg["action_noise_sigma"]
-        kwargs["action_noise"] = NormalActionNoise(
+        # OrnsteinUhlenbeck noise: temporally correlated, so consecutive steps
+        # stay positive (or negative) long enough to actually accelerate the car.
+        # Independent Gaussian noise averages to zero over a few steps and gets
+        # damped further by the action smoother — the car never gets a sustained
+        # push and collapses to the stand-still local optimum.
+        # theta=0.15 is the original DDPG paper value (mean-reversion rate).
+        kwargs["action_noise"] = OrnsteinUhlenbeckActionNoise(
             mean=np.zeros(n_actions),
             sigma=sigma * np.ones(n_actions),
+            theta=algo_cfg.get("action_noise_theta", 0.15),
         )
 
     return kwargs

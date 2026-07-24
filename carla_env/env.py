@@ -61,6 +61,7 @@ from carla_env.observation import compute_observation, get_observation_space
 from carla_env.action      import ActionProcessor, get_action_space
 from carla_env.reward      import (
     RewardConfig,
+    StallDetector,
     compute_reward,
     check_termination,
 )
@@ -237,6 +238,9 @@ class CarlaLaneKeepingEnv(gym.Env):
 
         # ── Action processor (smoother + translator) ───────────────────────────
         self._action_processor = ActionProcessor(alpha=action_smooth)
+
+        # ── Stall detector ─────────────────────────────────────────────────────
+        self._stall_detector = StallDetector(self.reward_config)
 
         # ── Random number generator for spawn point selection ──────────────────
         self._rng = random.Random(seed)
@@ -480,6 +484,9 @@ class CarlaLaneKeepingEnv(gym.Env):
         # last episode into the new one.
         self._action_processor.reset()
 
+        # ── Reset stall detector ───────────────────────────────────────────────
+        self._stall_detector.reset()
+
         # ── Reset smoothness-reward tracking ────────────────────────────────────
         # Same reasoning as the action smoother: without this, the first
         # action of a new episode would be compared against the last
@@ -539,6 +546,7 @@ class CarlaLaneKeepingEnv(gym.Env):
         # ── Check termination ──────────────────────────────────────────────────
         collision_flag = self._collision_sensor.has_collided
         self._step_count += 1
+        stall_flag = self._stall_detector.update(obs_data.speed_kmh)
 
         terminated, truncated, term_reason = check_termination(
             obs_data         = obs_data,
@@ -546,6 +554,7 @@ class CarlaLaneKeepingEnv(gym.Env):
             step_count       = self._step_count,
             max_steps        = self.max_steps,
             max_lateral_m    = self.reward_config.max_lateral_m,
+            stall_flag       = stall_flag,
         )
 
         # Terminal penalty only on agent failure, not on timeout
