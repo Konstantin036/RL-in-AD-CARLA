@@ -10,16 +10,16 @@ Thesis project comparing reinforcement learning algorithms for autonomous vehicl
 
 ## Results
 
-Each algorithm runs 20 evaluation episodes with a fixed spawn point and no action noise. An episode ends either at 1000 steps — 50 simulated seconds at ~30 km/h — or earlier if the car crashes, leaves the lane, or points the wrong way. Reaching 1000 steps is a success.
+Each algorithm runs 20 evaluation episodes with a fixed spawn point and no action noise. An episode ends either at 1000 steps — 50 simulated seconds at ~30 km/h — or earlier if the car crashes, leaves the lane, or points the wrong way. Reaching 1000 steps is a success. All four algorithms were evaluated with the same reward function so episode rewards are directly comparable.
 
 | Algorithm | Training Steps | Episode Reward (mean ± std, 20 episodes) | Mean Lateral Distance | Success Rate |
 |-----------|---------------|------------------------------------------|-----------------------|--------------|
 | **PPO** | ~1M | 3280.89 ± 0.09 | 0.024 m | 100% |
-| **SAC** | ~1M | 3325.06 ± 0.09 | **0.015 m** | 100% |
-| DDPG | — | — | — | not yet trained |
-| TD3 | — | — | — | not yet trained |
+| **SAC** | ~1M | **3325.06 ± 0.09** | **0.015 m** | 100% |
+| **TD3** | 500k | 3129.90 ± 0.30 | 0.448 m | 100% |
+| **DDPG** | 500k | 1392.37 ± 6.94 | 2.108 m | 100% |
 
-**Episode reward** is the sum of per-step rewards over 1000 steps (see Reward Function). A perfect run — centered at exactly 30 km/h, zero heading error, perfectly smooth steering — scores roughly 3400. The ±0.09 standard deviation across 20 episodes is near-zero because deterministic evaluation with a fixed spawn produces nearly identical trajectories every run; the only variation comes from floating-point timing in CARLA's physics step. **Mean lateral distance** is averaged across every step of every episode: PPO stays within 2.4 cm of center on average, SAC within 1.5 cm.
+**Episode reward** is the sum of per-step rewards over 1000 steps (see Reward Function). A perfect run — centered at exactly 30 km/h, zero heading error, perfectly smooth steering — scores roughly 3400. All four algorithms achieve 100% success: every evaluation episode runs the full 1000 steps without collision or lane departure. The difference is centering precision. SAC stays within 1.5 cm of lane center on average; PPO within 2.4 cm; TD3 within 44.8 cm; DDPG at 210.8 cm — effectively driving along the lane edge for the entire episode. The near-zero standard deviations for PPO and SAC confirm their deterministic evaluation policies trace nearly identical paths every run. TD3 and DDPG show slightly higher variance, consistent with their coarser control.
 
 ---
 
@@ -27,7 +27,7 @@ Each algorithm runs 20 evaluation episodes with a fixed spawn point and no actio
 
 ### Training Curves
 
-The y-axis is total episode reward — the sum of 1000 per-step shaped rewards. The x-axis counts how many environment steps the policy has processed. Faded points are individual training episodes; the solid line is a 20-episode rolling mean that removes per-episode noise to show the trend. PPO climbs steadily from ~1000 to ~3100 over 1M steps — on-policy updates process each batch of experience once, so progress is incremental. SAC starts low during the first ~10k steps while the replay buffer fills with random-action data, then improves quickly; the higher early variance reflects the buffer drawing from a mix of early and recent experience.
+The y-axis is total episode reward — the sum of per-step shaped rewards. The x-axis counts how many environment steps the policy has processed. Faded points are individual training episodes; the solid line is a 20-episode rolling mean. PPO climbs steadily from ~1000 to ~3100 over 1M steps — on-policy updates process each batch of experience once. SAC starts low during the first ~10k steps while the replay buffer fills with random-action data, then improves quickly. DDPG and TD3 each spent 50k steps in pure random exploration before the learned policy activated, then converged rapidly once the Q-function had enough driving experience. Their training rewards appear inflated relative to PPO and SAC because training used an additional forward-progress reward component (see Exploration section); evaluation rewards are directly comparable across all algorithms.
 
 ![Training Curves](docs/figures/training_curves.png)
 
@@ -35,7 +35,7 @@ The y-axis is total episode reward — the sum of 1000 per-step shaped rewards. 
 
 ### Algorithm Performance Comparison
 
-Bar heights are means over 20 deterministic evaluation episodes; error bars show ±1 standard deviation across those 20 episodes. For episode reward, higher means more total accumulated reward — the car stayed centered, drove at target speed, and maintained good heading for longer. For lateral distance, lower means the car stayed closer to lane center. The near-zero error bars confirm both policies are stable — not just high on average, but consistently high run to run.
+Bar heights are means over 20 deterministic evaluation episodes; error bars show ±1 standard deviation. For episode reward, higher means the car stayed centered, drove at target speed, and maintained good heading for longer. For lateral distance, lower means the car stayed closer to lane center. PPO and SAC have near-zero error bars — deterministic evaluation at a fixed spawn traces almost the same path every run. TD3 and DDPG show wider bars and larger error: their policies converged to driving but with less precision, so small physical differences between episodes produce more reward variation.
 
 ![Performance Comparison](docs/figures/comparison_bars.png)
 
@@ -43,7 +43,7 @@ Bar heights are means over 20 deterministic evaluation episodes; error bars show
 
 ### Lane Centering Progress
 
-The y-axis is mean lateral distance per training episode — average displacement from lane center during that episode. This is the training policy, which is stochastic, so the values are noisier than evaluation. The 0.5 m dashed line marks the point where the car's drift becomes obvious to an observer; the 0.1 m dotted line marks tight centering where a person in the car would barely notice any offset. Both algorithms reach sub-0.5 m early in training. SAC reaches and holds the 0.1 m level more consistently in the later phase, consistent with its better evaluation result (0.015 m vs 0.024 m).
+The y-axis is mean lateral distance per training episode — average displacement from lane center during that episode. The 0.5 m dashed line marks the point where the car's drift is visible to an observer; the 0.1 m dotted line marks tight centering. PPO and SAC reach and hold sub-0.1 m during the converged phase, consistent with their evaluation results. TD3 stabilizes around 0.2–0.5 m and DDPG around 2.0 m — the deterministic policies learned to drive but without the centering precision that entropy regularization produces. The gap between entropy-based algorithms (top two plots) and deterministic algorithms (bottom two) is the main visual finding of this figure.
 
 ![Lane Centering Progress](docs/figures/lateral_progress.png)
 
@@ -51,7 +51,7 @@ The y-axis is mean lateral distance per training episode — average displacemen
 
 ### Episode Termination Breakdown
 
-Each evaluation episode ends for one of four reasons: lane exit, collision, wrong heading (>90° from road direction), or reaching the 1000-step limit. Reaching the limit is a success — the car drove 50 seconds without any failure. Both PPO and SAC terminate 100% of episodes at the step limit during deterministic evaluation. There are no failures of any kind, meaning both policies are robust across all 20 trials, not just on a lucky run.
+Each evaluation episode ends for one of four reasons: lane exit, collision, wrong heading (>90° from road direction), or reaching the 1000-step limit. Reaching the limit is a success — the car drove 50 seconds without any failure. All four algorithms terminate 100% of episodes at the step limit. There are no collisions, lane departures, or wrong-heading events in any of the 80 total evaluation episodes (20 per algorithm). Survival is necessary but not sufficient: DDPG survives while driving 2.1 m off-center, which would be a lane departure in a real two-lane road. The lateral distance metric distinguishes policy quality where the binary success/failure measure cannot.
 
 ![Termination Breakdown](docs/figures/termination_breakdown.png)
 
@@ -82,7 +82,7 @@ Six axes represent six dimensions of performance. Each axis is normalized to a r
 
 ### Evaluation Score Distribution
 
-Box plots of episode reward and mean lateral distance across the 20 evaluation episodes. The box spans the middle 50% of episodes (interquartile range); the line inside is the median; individual episode dots are overlaid with a small horizontal jitter to avoid overlap. The spread is extremely narrow (reward std ≈ 0.09) because a deterministic policy at a fixed spawn point traces nearly the same path every run. The vertical gap between the PPO and SAC boxes shows the algorithms are consistently separated — SAC is not just higher on average, it is higher on every single episode.
+Box plots of episode reward and mean lateral distance across the 20 evaluation episodes. The box spans the middle 50% of episodes (interquartile range); the line inside is the median; individual episode dots are overlaid with a small horizontal jitter. PPO and SAC show near-zero spread (reward std ≈ 0.09) because their deterministic evaluation policies trace nearly the same path every run. TD3 shows moderate spread (std ≈ 0.30), and DDPG the most (std ≈ 6.94), consistent with less precise control. The lateral distance subplot reveals the centering gap more sharply: SAC and PPO boxes cluster near zero, while TD3 and DDPG boxes sit at 0.45 m and 2.1 m — differences invisible in the termination breakdown but critical for real-world lane keeping.
 
 ![Evaluation Distributions](docs/figures/eval_distributions.png)
 
@@ -90,7 +90,7 @@ Box plots of episode reward and mean lateral distance across the 20 evaluation e
 
 ### Training Stability
 
-The y-axis is the rolling standard deviation of episode reward over a 50-episode window — not the mean reward, but how much it varied within each window. High values mean the policy's performance was jumping around; low values mean it had settled. PPO drops to near-zero variance by ~200k steps and stays there: once it found a working policy, performance remained stable. SAC shows periodic spikes. Each spike corresponds to a training session restart: the replay buffer starts empty, the policy draws from low-quality early experience, performance dips, and variance rises until the buffer fills again. After each restart the spike subsides as the buffer warms up.
+The y-axis is the rolling standard deviation of episode reward over a 50-episode window — how much performance varied within each window. PPO drops to near-zero variance by ~200k steps and stays there. SAC shows periodic spikes, each corresponding to a training session restart where the replay buffer starts empty and performance dips until the buffer fills. TD3 and DDPG show a characteristic two-phase shape: very high variance during the 50k-step random exploration phase (episodes alternate between stalling and driving, which are very different reward magnitudes), then a sharp drop once the learned policy stabilizes. DDPG's converged variance is higher than TD3's, consistent with its coarser policy.
 
 ![Training Stability](docs/figures/training_stability.png)
 
@@ -98,7 +98,7 @@ The y-axis is the rolling standard deviation of episode reward over a 50-episode
 
 ### Speed Distribution
 
-Histogram of mean episode speed from the last 300 training episodes of each algorithm's final training run, covering the converged phase. Episodes with mean speed below 20 km/h are excluded — they belong to replay buffer warmup when SAC had not yet learned to drive. The dashed line at 30 km/h is the reward function's speed target. SAC clusters tightly around 30 km/h; PPO peaks around 28.5 km/h with a wider spread. The wider PPO distribution reflects its stochastic policy sampling different throttle values at each step, while SAC's entropy tuning converges to a narrower range of behaviors.
+Histogram of mean episode speed from the last 300 training episodes of each algorithm's final run, covering the converged phase. Episodes with mean speed below 20 km/h are excluded — they come from random exploration before the learned policy activates. The dashed line at 30 km/h is the reward function's target. SAC clusters tightly around 30 km/h; PPO peaks near 28.5 km/h with a wider spread — its stochastic policy samples different throttle values each step. TD3 and DDPG drive above target speed (frequently exceeding 30 km/h) because the forward-progress reward used during their training rewards movement proportional to speed up to target, creating slight incentive to stay at or above the target rather than match it precisely.
 
 ![Speed Distribution](docs/figures/speed_distribution.png)
 
@@ -254,16 +254,16 @@ The four algorithms differ fundamentally in how they balance exploring new actio
 
 | Algorithm | Type | Policy | How it explores | Entropy control |
 |-----------|------|--------|----------------|----------------|
-| **PPO** | On-policy | Stochastic | Entropy bonus (`ent_coef=0.05`) penalizes policies that concentrate on one action | Fixed — set before training, does not change |
+| **PPO** | On-policy | Stochastic | Entropy bonus (`ent_coef=0.05`) penalizes policies that concentrate on one action | Fixed — set before training |
 | **SAC** | Off-policy | Stochastic | Same entropy mechanism, but the target entropy level is learned automatically | **Automatic** — adjusts throughout training |
-| **DDPG** | Off-policy | Deterministic | Gaussian noise (σ=0.1) added to the output action at execution time | None — noise schedule is fixed |
-| **TD3** | Off-policy | Deterministic | Gaussian noise plus target policy smoothing and clipped double Q-functions | None — noise schedule is fixed |
+| **TD3** | Off-policy | Deterministic | Ornstein-Uhlenbeck noise (σ=0.3, θ=0.15) added to actions; temporally correlated so consecutive steps push in the same direction | None — noise schedule is fixed |
+| **DDPG** | Off-policy | Deterministic | Same OU noise as TD3; TD3 additionally uses target policy smoothing and clipped double Q-functions to reduce overestimation | None — noise schedule is fixed |
 
 In practice:
 
-- PPO must have its entropy coefficient set correctly before training. `ent_coef=0.01` caused the agent to stop moving — a stationary car earns ~1880 reward per episode from centering and smoothness, and at low entropy the policy locked into that local optimum. `ent_coef=0.05` provides enough exploration pressure to escape it.
+- PPO must have its entropy coefficient set correctly before training. `ent_coef=0.01` caused the policy to lock onto the stand-still local optimum — a stationary car earns ~1880 reward per episode from centering and smoothness. `ent_coef=0.05` provides enough exploration pressure to escape it.
 - SAC learns the right exploration level automatically and avoids the stand-still trap without manual tuning.
-- DDPG and TD3 add noise to the output at execution time, keeping the policy deterministic at its core. The exploration schedule must be decided in advance rather than adapted during training.
+- DDPG and TD3 initially used independent Gaussian noise, which averaged to zero through the action smoother (α=0.6) and could not push the car consistently. Switching to Ornstein-Uhlenbeck noise (temporally correlated — consecutive steps stay positive or negative for sustained bursts) was necessary but not sufficient. Both algorithms also required a forward-progress reward component (`w_progress × speed/target`) that is strictly zero at zero speed; without it, centering and smoothness rewards gave the stand-still state a non-zero baseline the Q-function could exploit. With both changes and 50k random-exploration steps before policy activation, both algorithms eventually drove — but converged to coarser policies than the entropy-based methods.
 - SAC, DDPG, and TD3 store all past experience in a replay buffer and sample from it repeatedly. PPO discards each batch after one update pass. This is why off-policy methods typically reach useful behavior with fewer environment interactions.
 
 ---
@@ -272,13 +272,17 @@ In practice:
 
 1. **A 4D observation is sufficient** for lane keeping on a straight highway. The car does not need cameras or lidar — it only needs to know where it is laterally, which way it is pointing, how fast it is going, and what steering it applied last step.
 
-2. **SAC centers more tightly** (0.015 m vs 0.024 m) because automatic entropy tuning finds the right exploration level without manual intervention. It neither overexplores (erratic steering) nor underexplores (stand-still).
+2. **Entropy regularization determines centering precision, not just survival.** All four algorithms achieve 100% episode survival. The centering gap is: SAC 0.015 m, PPO 0.024 m, TD3 0.448 m, DDPG 2.108 m. SAC and PPO — both entropy-based — center 10–140× more precisely than the deterministic algorithms. Survival and centering are different skills; the binary success metric is insufficient to distinguish algorithm quality here.
 
-3. **PPO is sensitive to entropy tuning**. At `ent_coef=0.01` the policy collapsed to standing still within the first ~100k steps. The stand-still local optimum yields ~1880 reward per episode from centering and smoothness alone. `ent_coef=0.05` pushes the policy past it.
+3. **Deterministic policies collapse to a stand-still local optimum without intervention.** DDPG and TD3 both initially found that standing still earns ~1880 reward per episode from centering and smoothness — competitive with early driving attempts. Two interventions were required to escape it: (a) Ornstein-Uhlenbeck exploration noise instead of independent Gaussian noise (which averages to zero through action smoothing and cannot sustain directional pressure), and (b) a forward-progress reward component (`w_progress × min(speed, target)/target`) that is exactly zero at zero speed, removing the centering baseline. PPO and SAC escaped the same optimum through entropy alone.
 
-4. **PPO's best checkpoint appeared at ~681k steps**. Continuing to 1M steps slightly degraded performance — the policy had already converged. Evaluation uses the 681k checkpoint, not the final weights.
+4. **SAC centers more tightly than PPO** (0.015 m vs 0.024 m) because automatic entropy tuning finds the right exploration level without manual intervention. It neither overexplores (erratic steering) nor underexplores (stand-still).
 
-5. **Action smoothing (α=0.6) is required for PPO**. A stochastic policy samples a new throttle and steering at every step. Without smoothing, the step-to-step steering variance causes oscillation the car cannot physically follow.
+5. **PPO is sensitive to entropy tuning**. At `ent_coef=0.01` the policy collapsed to standing still within the first ~100k steps. `ent_coef=0.05` provides enough exploration pressure to escape it. This makes PPO more fragile to tune than SAC.
+
+6. **PPO's best checkpoint appeared at ~681k steps**. Continuing to 1M steps slightly degraded performance — the policy had already converged. Evaluation uses the 681k checkpoint.
+
+7. **Action smoothing (α=0.6) is required for stochastic policies**. Without smoothing, the step-to-step steering variance in PPO's Gaussian policy causes oscillation the car cannot physically follow.
 
 ---
 

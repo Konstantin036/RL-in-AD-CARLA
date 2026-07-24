@@ -152,7 +152,9 @@ training:
   total_timesteps:  500000      # total environment steps to train for
                                 # 500k is a reasonable first run (~8 hours)
                                 # increase to 1M-2M for better performance
-  eval_freq:        10000       # evaluate every N training steps
+  eval_freq:        50000       # evaluate every N training steps
+                                # raised from 10000 — with learning_starts=50k,
+                                # evaluating before step 50k runs a random policy
   eval_episodes:    5           # episodes per evaluation
   save_freq:        10000       # save checkpoint every N steps
   log_interval:     10          # SB3 log every N updates
