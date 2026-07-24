@@ -87,6 +87,16 @@ class RewardConfig:
     # Set to 0.0 to disable.
     step_penalty: float = -0.05
 
+    # ── Forward progress reward ────────────────────────────────────────────────────
+    # Linear reward proportional to speed, capped at target speed.
+    # Formula: min(speed_kmh, target_speed_kmh) / target_speed_kmh → [0, 1]
+    # At zero speed this is exactly 0, removing the constant baseline that the
+    # Gaussian speed reward leaves (~0.017 at standstill). Deterministic-policy
+    # algorithms (DDPG, TD3) need this to break the stand-still local optimum.
+    # Set to 0.0 to disable (PPO/SAC don't need it; SAC's entropy already
+    # provides sufficient exploration pressure).
+    w_progress: float = 0.0
+
     # ── Stall termination ────────────────────────────────────────────────────────
     # Terminates the episode (with terminal_penalty) if the car stays below
     # stall_min_speed_kmh for stall_patience_steps consecutive steps.
@@ -115,6 +125,7 @@ class RewardConfig:
             sigma_speed          = reward_cfg["sigma_speed"],
             terminal_penalty     = reward_cfg["terminal_penalty"],
             step_penalty         = reward_cfg["step_penalty"],
+            w_progress           = reward_cfg.get("w_progress",           0.0),
             stall_enabled        = reward_cfg.get("stall_enabled",        True),
             stall_min_speed_kmh  = reward_cfg.get("stall_min_speed_kmh",  2.0),
             stall_patience_steps = reward_cfg.get("stall_patience_steps", 100),
@@ -137,6 +148,7 @@ class RewardInfo:
     r_speed: float       # speed component (before weighting)
     r_heading: float     # heading component (before weighting)
     r_smoothness: float  # smoothness component (before weighting)
+    r_progress: float    # forward progress component (before weighting)
     r_terminal: float    # terminal penalty (0 unless episode ended)
     r_step: float        # step penalty
     is_terminal: bool    # True if episode ended this step
@@ -148,6 +160,7 @@ class RewardInfo:
             f"speed={self.r_speed:.3f} "
             f"heading={self.r_heading:.3f} "
             f"smooth={self.r_smoothness:.3f} "
+            f"progress={self.r_progress:.3f} "
             f"terminal={self.r_terminal:.1f})"
         )
 
@@ -240,6 +253,25 @@ def compute_smoothness_reward(action_delta: np.ndarray) -> float:
     return max(0.0, 1.0 - delta_magnitude / 4.0)
 
 
+def compute_progress_reward(speed_kmh: float, target_speed_kmh: float) -> float:
+    """
+    Reward for moving forward, capped at the target speed.
+
+    Formula: min(speed_kmh, target_speed_kmh) / target_speed_kmh
+    Range:   [0.0, 1.0]
+    Peak:    1.0 at speed >= target_speed_kmh
+    Zero:    0.0 at speed == 0.0 (exactly zero, not ~0.017 like the Gaussian)
+
+    Why not just the Gaussian speed reward?
+        The Gaussian gives ~0.017 at zero speed. That small but non-zero
+        baseline still lets the stand-still state earn centering + heading +
+        smoothness rewards without any cost for not moving. This linear term
+        is strictly zero at zero speed — there is no baseline to exploit.
+        The cap at target_speed prevents incentivizing speeding past the target.
+    """
+    return float(min(speed_kmh, target_speed_kmh) / target_speed_kmh)
+
+
 # ── Main reward function ───────────────────────────────────────────────────────
 
 def compute_reward(
@@ -286,6 +318,11 @@ def compute_reward(
 
     r_smoothness = compute_smoothness_reward(action_delta)
 
+    r_progress = compute_progress_reward(
+        obs_data.speed_kmh,
+        cfg.target_speed_kmh,
+    )
+
     # ── Terminal penalty ────────────────────────────────────────────────────────
     # Only applied on the step where the episode ends badly.
     # Not applied on timeout (episode ran for max steps without crashing).
@@ -296,10 +333,11 @@ def compute_reward(
 
     # ── Weighted sum ────────────────────────────────────────────────────────────
     total = (
-        cfg.w_center  * r_centering
+        cfg.w_center    * r_centering
         + cfg.w_speed   * r_speed
         + cfg.w_heading * r_heading
         + cfg.w_smooth  * r_smoothness
+        + cfg.w_progress * r_progress
         + r_terminal
         + r_step
     )
@@ -310,6 +348,7 @@ def compute_reward(
         r_speed=r_speed,
         r_heading=r_heading,
         r_smoothness=r_smoothness,
+        r_progress=r_progress,
         r_terminal=r_terminal,
         r_step=r_step,
         is_terminal=is_terminal,

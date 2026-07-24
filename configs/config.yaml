@@ -42,6 +42,15 @@ reward:
   terminal_penalty: -10.0       # penalty for collision / off-road
   step_penalty:     -0.1        # small penalty per step
 
+  # Forward progress reward — linear component proportional to speed,
+  # capped at target_speed. min(speed, target) / target → [0, 1].
+  # At zero speed this is exactly 0.0, unlike the Gaussian (which gives
+  # ~0.017 at standstill). Deterministic-policy algorithms (DDPG, TD3)
+  # need this to break the stand-still local optimum; SAC and PPO are
+  # unaffected (they already explore via entropy and thus drive).
+  # Set to 0.0 to disable.
+  w_progress:           1.0
+
   # Stall termination — ends the episode (with terminal_penalty) if the
   # car stays below stall_min_speed_kmh for stall_patience_steps steps.
   # Prevents deterministic-policy algorithms (DDPG, TD3) from exploiting
@@ -97,10 +106,12 @@ sac:
 ddpg:
   learning_rate:      0.001      # Adam optimizer learning rate
   buffer_size:        200000     # replay buffer capacity (transitions)
-  learning_starts:    10000      # steps of random actions before training starts
-                                 #   raised from 1000 — need a diverse replay
-                                 #   buffer before the policy takes over, or
-                                 #   DDPG collapses to stand-still immediately
+  learning_starts:    50000      # steps of random actions before training starts
+                                 #   raised from 10000 — DDPG collapsed to
+                                 #   stand-still even at 10k; a bigger buffer
+                                 #   of diverse random trajectories gives the
+                                 #   Q-function enough driving examples to
+                                 #   learn that movement is better
   batch_size:         256        # minibatch size for gradient updates
   tau:                0.005      # target network soft-update rate
   gamma:              0.99       # discount factor
@@ -124,8 +135,8 @@ ddpg:
 td3:
   learning_rate:      0.001      # Adam optimizer learning rate
   buffer_size:        200000     # replay buffer capacity (transitions)
-  learning_starts:    10000      # steps of random actions before training starts
-                                 #   raised from 1000 — same reason as DDPG
+  learning_starts:    50000      # steps of random actions before training starts
+                                 #   raised from 10000 — same reason as DDPG
   batch_size:         256        # minibatch size for gradient updates
   tau:                0.005      # target network soft-update rate
   gamma:              0.99       # discount factor
