@@ -172,7 +172,7 @@ def print_summary(summary: EvaluationSummary) -> None:
     print(f"  Mean lateral distance: {summary.mean_lateral_distance:.4f} m")
     print(f"  Success rate:          {summary.success_rate * 100:.1f}%")
     print(f"  Mean episode length:   {summary.mean_length:.1f} steps")
-    print("  Termination reasons:")
+    print("  Termination reasons:", end="")
     for reason, count in sorted(summary.termination_counts.items()):
         print(f"    {reason:15s} {count}")
     print("=" * 55 + "\n")
