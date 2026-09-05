@@ -88,6 +88,9 @@ DEFAULT_HOST    = "localhost"
 DEFAULT_PORT    = 2000
 DEFAULT_TIMEOUT = 10.0
 DESTINATION_REACHED_M = 5.0
+SPAWN_HEIGHT_OFFSET_M = 0.5   # lift above a route waypoint's raw road-surface
+                              # z when spawning there, to avoid a ground-
+                              # clipping spawn collision (see reset())
 
 
 SPECTATOR_DISTANCE_M = 8.0    # meters behind the vehicle
@@ -345,69 +348,66 @@ class CarlaLaneKeepingEnv(gym.Env):
                 self._vehicle.destroy()
             self._vehicle = None
 
-    def _spawn_vehicle(self):
+    def _choose_spawn_transform(self):
         """
-        Spawn the ego vehicle.
+        Choose the candidate origin transform used to seed route
+        planning — NOT where the vehicle is ultimately spawned.
 
-        If self.spawn_index is set, always spawns at that exact spawn
+        If self.spawn_index is set, always returns that exact spawn
         point (deterministic — for validating that an algorithm is
         learning, since episode-to-episode progress is only comparable
-        from a fixed start). Retries the same point up to 5 times on
-        transient occupation, then raises — never falls back to a
-        different point, which would silently break the "always the
-        same start" guarantee.
+        from a fixed start). If None, picks a random spawn point.
 
-        If self.spawn_index is None, picks a random point (existing
-        behavior, unchanged) — for general training once validated.
-
-        Returns carla.Vehicle.
-        Raises RuntimeError if all spawn attempts fail.
+        Why the vehicle doesn't spawn here directly: route planning
+        needs a location before any route (or actor) exists, but the
+        actual spawn transform should be the route's own first waypoint
+        (see reset()) — RoutePlanner.plan_route()'s underlying
+        trace_route() snaps its start to the nearest topology node,
+        which is usually this exact candidate point but not always
+        (short routes, awkward junctions). Spawning at the raw candidate
+        instead of the route's real start produces an instant, spurious
+        lateral-distance blowup the moment the episode begins (confirmed
+        via live testing — occurred in ~1 in 10 episodes on Town10).
         """
-        import carla
-
-        bp = self._world.get_blueprint_library().find("vehicle.tesla.model3")
-        if bp.has_attribute("color"):
-            bp.set_attribute("color", "255,0,0")   # red for visibility
-
         if self.spawn_index is not None:
             effective_index = _compute_effective_spawn_index(
                 self.spawn_index, self.spawn_index_offset, len(self._spawn_points)
             )
-            transform = self._spawn_points[effective_index]
-            for attempt in range(5):
-                vehicle = self._world.try_spawn_actor(bp, transform)
-                if vehicle is not None:
-                    logger.debug(
-                        f"Vehicle spawned at fixed spawn_index={self.spawn_index} "
-                        f"(effective index {effective_index}, offset {self.spawn_index_offset}) "
-                        f"(attempt {attempt+1}): "
-                        f"x={transform.location.x:.1f}, y={transform.location.y:.1f}"
-                    )
-                    self._last_spawn_transform = transform
-                    return vehicle
-            raise RuntimeError(
-                f"Failed to spawn vehicle at fixed spawn_index={self.spawn_index} "
-                f"(effective index {effective_index}, offset {self.spawn_index_offset}) "
-                f"after 5 attempts. That spawn point stayed occupied."
-            )
+            return self._spawn_points[effective_index]
+        return self._rng.choice(self._spawn_points)
 
-        # Random mode (unchanged): try up to 5 random spawn points before
-        # giving up. Some spawn points may be occupied if the world has traffic.
+    def _spawn_vehicle_at(self, transform):
+        """
+        Spawn the ego vehicle at an exact transform.
+
+        Retries the same point up to 5 times on transient occupation,
+        then raises — never falls back to a different point. By the
+        time this is called, the caller has already committed to this
+        exact transform (the route's own first waypoint); silently
+        spawning somewhere else would break the "vehicle starts exactly
+        on its route" guarantee this method exists to provide.
+
+        Returns carla.Vehicle.
+        Raises RuntimeError if all spawn attempts fail.
+        """
+        bp = self._world.get_blueprint_library().find("vehicle.tesla.model3")
+        if bp.has_attribute("color"):
+            bp.set_attribute("color", "255,0,0")   # red for visibility
+
         for attempt in range(5):
-            transform = self._rng.choice(self._spawn_points)
-            vehicle   = self._world.try_spawn_actor(bp, transform)
+            vehicle = self._world.try_spawn_actor(bp, transform)
             if vehicle is not None:
                 logger.debug(
-                    f"Vehicle spawned at attempt {attempt+1}: "
-                    f"x={transform.location.x:.1f}, "
-                    f"y={transform.location.y:.1f}"
+                    f"Vehicle spawned (attempt {attempt+1}): "
+                    f"x={transform.location.x:.1f}, y={transform.location.y:.1f}"
                 )
                 self._last_spawn_transform = transform
                 return vehicle
 
         raise RuntimeError(
-            "Failed to spawn vehicle after 5 attempts. "
-            "All chosen spawn points were occupied."
+            f"Failed to spawn vehicle at x={transform.location.x:.1f}, "
+            f"y={transform.location.y:.1f} after 5 attempts. "
+            f"That point stayed occupied."
         )
 
     def _snap_spectator_to_vehicle(self, vehicle_transform) -> None:
@@ -423,7 +423,7 @@ class CarlaLaneKeepingEnv(gym.Env):
         self._vehicle.get_transform() itself, because the right source
         differs by caller:
           - reset() passes self._last_spawn_transform (the transform
-            _spawn_vehicle() requested). CARLA's client-side actor cache
+            _spawn_vehicle_at() requested). CARLA's client-side actor cache
             does not reflect a freshly spawned actor's real transform
             until at least one world.tick() has elapsed — querying
             get_transform() right after spawning returns a stale
@@ -487,14 +487,12 @@ class CarlaLaneKeepingEnv(gym.Env):
         # ── Tick once to let destructions propagate ────────────────────────────
         self._world.tick()
 
-        # ── Spawn new vehicle ──────────────────────────────────────────────────
-        self._vehicle = self._spawn_vehicle()
-
-        # ── Generate route ─────────────────────────────────────────────────────
-        #start_location = self._vehicle.get_transform().location
-        
-        # ── Generate route ─────────────────────────────────────────────────────
-        start_location = self._last_spawn_transform.location
+        # ── Plan the route before spawning ──────────────────────────────────────
+        # Route planning only needs a location, not a live actor — and the
+        # vehicle should ultimately spawn on the route's own first waypoint
+        # (see below), so the route has to exist first.
+        candidate_transform = self._choose_spawn_transform()
+        start_location = candidate_transform.location
 
         # Choose a destination different from the spawn point.
         if self.spawn_index is not None:
@@ -525,6 +523,35 @@ class CarlaLaneKeepingEnv(gym.Env):
             f"destination=({destination_location.x:.1f}, "
             f"{destination_location.y:.1f})"
         )
+
+        # ── Spawn the vehicle exactly on the route's first waypoint ─────────────
+        # Not at candidate_transform directly — trace_route() snaps its start
+        # to the nearest topology node, which usually matches the candidate
+        # but not always. Spawning at route[0] instead guarantees the vehicle
+        # starts exactly where the route begins (position AND heading),
+        # eliminating that mismatch by construction rather than in the
+        # common case only. Falls back to the candidate if plan_route()
+        # somehow returned an empty route (e.g. start == destination).
+        #
+        # Route waypoints sit exactly at road-surface height, unlike
+        # carla_map.get_spawn_points()'s entries, which carry a small
+        # built-in vertical offset specifically to avoid a ground-clipping
+        # spawn collision. Spawning at the waypoint's raw z reliably failed
+        # all 5 retry attempts in live testing ("stayed occupied" — not
+        # real occupation, since nothing else exists in this world) — so
+        # lift it the same way _compute_spectator_transform and
+        # RoutePlanner.draw_route already lift waypoint locations for
+        # their own purposes.
+        import carla
+        if self._route:
+            wp_transform = self._route[0].waypoint.transform
+            spawn_transform = carla.Transform(
+                wp_transform.location + carla.Location(z=SPAWN_HEIGHT_OFFSET_M),
+                wp_transform.rotation,
+            )
+        else:
+            spawn_transform = candidate_transform
+        self._vehicle = self._spawn_vehicle_at(spawn_transform)
 
         # ── Draw the route in the CARLA world ───────────────────────────────────
         # Visualization aid only — CARLA's debug draw has no effect on

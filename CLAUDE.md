@@ -210,15 +210,45 @@ version later without touching env.py's call structure, observation.py,
 or reward.py:
 
 - **Route waypoint** (`carla_env/route_planner.py`): `RoutePlanner` runs
-  CARLA's `GlobalRoutePlanner` once per episode (`reset()`) between the
-  spawn point and a chosen destination, then `env.py` tracks the closest
-  route index every step and looks up a waypoint 5 steps ahead
-  (`get_target_waypoint()`). `compute_observation()` measures
-  lateral_distance/heading_error against *that* waypoint instead of
-  `carla_map.get_waypoint()`'s "nearest lane, no matter which" lookup —
-  the only way to disambiguate direction inside a junction, where the
-  physically-closest lane can belong to a crossing or turning path that
-  isn't on the route.
+  CARLA's `GlobalRoutePlanner` once per episode (`reset()`) between a
+  candidate spawn point and a chosen destination, then `env.py` tracks
+  the closest route index every step via `get_target_waypoint(...,
+  lookahead=0)`. `compute_observation()` measures lateral_distance/
+  heading_error against *that* waypoint (the closest one, not one
+  further ahead) instead of `carla_map.get_waypoint()`'s "nearest lane,
+  no matter which" lookup — the only way to disambiguate direction
+  inside a junction, where the physically-closest lane can belong to a
+  crossing or turning path that isn't on the route.
+
+  `lookahead=0` specifically, not further ahead: lateral_distance/
+  heading_error need to reflect where the car *actually is*, and a
+  waypoint further down the route can already be mid-curve — confirmed
+  via live testing to produce a large apparent lateral_distance with no
+  relation to real lane position whenever the road bent within that
+  window, causing spurious off-road terminations.
+
+  `get_closest_waypoint_index()` also caps how far ahead of the last
+  known index it searches (`max_search_ahead`, default 30 waypoints /
+  60m at this project's 2.0m sampling_resolution). Without the cap, on
+  a dense grid (Town10) a physically-closer point on a parallel street
+  could out-compete the correct next point on the current street,
+  snapping route_index to an unrelated segment pointing a different
+  direction — confirmed via live testing as the car suddenly yanking
+  the wheel on a straight road.
+
+  The vehicle spawns on `route[0]`'s exact transform, not at the
+  original candidate spawn point — `plan_route()`'s underlying
+  `trace_route()` snaps its start to the nearest topology node, which
+  is usually the candidate but not always (short routes, awkward
+  junctions); spawning at the mismatch produced an instant, spurious
+  lateral-distance blowup right at reset in roughly 1 in 10 episodes on
+  Town10. `reset()` therefore plans the route from a candidate point
+  *before* spawning, then spawns at `route[0].waypoint.transform`
+  (lifted `SPAWN_HEIGHT_OFFSET_M` above its raw road-surface z — a
+  route waypoint sits exactly at road level, unlike
+  `get_spawn_points()`'s entries, which carry a built-in vertical
+  offset specifically to avoid a ground-clipping spawn collision;
+  spawning at the raw z reliably failed every retry attempt).
 
 - **Traffic light** (`carla_env/traffic_rules.py`): `get_traffic_light_affordance()`
   reads CARLA's own ground truth (`vehicle.is_at_traffic_light()` /
@@ -242,6 +272,12 @@ or reward.py:
   4D to 5D — any checkpoint trained before this change will not load
   into a model built after it (input layer size mismatch). This is an
   expected consequence of extending the state representation, not a bug.
+
+  `StallDetector` (in `reward.py`) ignores low speed while
+  `traffic_light.must_stop` is True — without this, correctly waiting at
+  a red light for longer than `stall_patience_steps` would trigger the
+  same terminal penalty as an actual stall, directly undermining the
+  red-light-compliance objective it's supposed to be learning.
 
 ---
 
