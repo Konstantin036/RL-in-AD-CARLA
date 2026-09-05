@@ -151,22 +151,34 @@ class RoutePlanner:
         max_search_ahead: int = 30,
     ) -> int:
         """
-        Find the route waypoint closest to the vehicle.
+        Find the route waypoint closest to the vehicle, respecting the
+        route's own order.
+
+        Walks forward from start_index, tracking the running closest
+        point, and stops at the first waypoint where distance starts
+        increasing again (i.e. the first local minimum). This is
+        deliberately NOT "the closest point within the search window" —
+        it never looks past the point where it started moving away
+        again, so it can't skip ahead to a different, out-of-sequence
+        point on the route no matter how spatially close that point is.
+        That matters whenever the route curves back near itself (a tight
+        turn, a loop, two lanes running close together): the waypoints
+        must be visited in the order the route actually defines, based
+        on the planned start and destination — not in whichever order
+        happens to be nearest in raw distance. A pure global-minimum
+        search over a search window (an earlier version of this method)
+        does not have this guarantee: a later, out-of-sequence point
+        that happens to be closer still wins if it's inside the window.
 
         start_index can be used to avoid searching the entire route
         every simulation step.
 
-        max_search_ahead caps how many waypoints past start_index are
-        considered (default 30, i.e. 60m at the 2.0m sampling_resolution
-        this project uses). Without this cap, searching all the way to
-        the end of the route lets a spatially-close-but-topologically-
-        distant point win — on a dense grid (e.g. Town10), a parallel
-        street a block over can be physically closer than the correct
-        next waypoint on the current street, snapping route_index far
-        ahead to an unrelated segment pointing a different direction.
-        That produces a sudden fake heading/lateral error and a sharp,
-        spurious steering correction — confirmed via live testing (car
-        visibly yanking the wheel on a straight stretch of road).
+        max_search_ahead bounds how far the walk is allowed to go before
+        giving up (default 30, i.e. 60m at the 2.0m sampling_resolution
+        this project uses) — a defensive limit for the case where
+        distance never stops decreasing within a reasonable range (e.g.
+        start_index is badly out of sync), not the primary mechanism
+        that keeps tracking correct.
         """
         if not route:
             raise ValueError("Route is empty.")
@@ -174,15 +186,24 @@ class RoutePlanner:
         start_index = max(0, min(start_index, len(route) - 1))
         search_end = min(start_index + max_search_ahead, len(route))
 
-        distances = [
-            self.distance(
-                location,
-                route[i].waypoint.transform.location,
-            )
-            for i in range(start_index, search_end)
-        ]
+        best_index = start_index
+        best_distance = self.distance(
+            location, route[start_index].waypoint.transform.location
+        )
 
-        return start_index + distances.index(min(distances))
+        for i in range(start_index + 1, search_end):
+            d = self.distance(location, route[i].waypoint.transform.location)
+            if d < best_distance:
+                best_distance = d
+                best_index = i
+            else:
+                # Distance increased — we've passed the local minimum
+                # along the route's own order. Stop here rather than
+                # continuing to scan for a spatially closer but
+                # out-of-sequence point further down the route.
+                break
+
+        return best_index
 
     def get_target_waypoint(
         self,

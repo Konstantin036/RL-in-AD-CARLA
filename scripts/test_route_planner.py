@@ -112,10 +112,44 @@ def test_ignores_distant_parallel_street():
     assert ok
 
 
-# ── Test 3: get_target_waypoint with lookahead=0 returns the closest point ─────
+# ── Test 3: a route that loops back near itself is still followed in order ─────
+
+def test_respects_order_when_route_loops_near_itself():
+    sep("3. A route curving back close to itself is still tracked in order "
+        "(not jumped ahead to a later, spatially-closer point)")
+    planner = make_planner()
+
+    # Outbound leg: (0,0) to (10,0) at indices 0..10.
+    route = make_straight_route(length_m=10.0, spacing_m=1.0)
+
+    # Extend with a "return leg" that loops back and, at index 15, passes
+    # extremely close to the outbound leg's index 5 — like a tight hairpin
+    # or a road that curves around near itself. Filler points in between
+    # just continue away from the outbound leg so they can't interfere.
+    for i in range(11, 21):
+        route.append(RouteWaypoint(waypoint=FakeWaypoint(10.0 - (i - 10), 5.0)))
+    route[15] = RouteWaypoint(waypoint=FakeWaypoint(5.0, 0.03))
+
+    # Vehicle is exactly on top of index 15 (distance 0) but only 0.03m
+    # from index 5 — index 15 is the true global-nearest point, but it's
+    # badly out of sequence (10 waypoints further down the route).
+    # Tracking was already at index 5 last step.
+    vehicle_location = FakeLocation(5.0, 0.03)
+
+    index = planner.get_closest_waypoint_index(
+        route, vehicle_location, start_index=5, max_search_ahead=30
+    )
+    ok = index == 5
+    print(f"  index 15 is the true nearest point (distance ~0), "
+          f"but expected index=5 (in-order): got index={index}")
+    print(f"  {'✓' if ok else '✗'} PASSED")
+    assert ok
+
+
+# ── Test 4: get_target_waypoint with lookahead=0 returns the closest point ─────
 
 def test_target_waypoint_lookahead_zero():
-    sep("3. get_target_waypoint(lookahead=0) returns the closest waypoint itself")
+    sep("4. get_target_waypoint(lookahead=0) returns the closest waypoint itself")
     planner = make_planner()
     route = make_straight_route()
 
@@ -126,10 +160,10 @@ def test_target_waypoint_lookahead_zero():
     assert ok
 
 
-# ── Test 4: get_target_waypoint clamps lookahead at the route's end ───────────
+# ── Test 5: get_target_waypoint clamps lookahead at the route's end ───────────
 
 def test_target_waypoint_clamps_at_end():
-    sep("4. get_target_waypoint clamps lookahead at the end of a short route")
+    sep("5. get_target_waypoint clamps lookahead at the end of a short route")
     planner = make_planner()
     route = make_straight_route(length_m=8.0)   # 5 waypoints
 
@@ -140,10 +174,10 @@ def test_target_waypoint_clamps_at_end():
     assert ok
 
 
-# ── Test 5: remaining_distance decreases monotonically along the route ────────
+# ── Test 6: remaining_distance decreases monotonically along the route ────────
 
 def test_remaining_distance_monotonic():
-    sep("5. remaining_distance decreases as current_index advances")
+    sep("6. remaining_distance decreases as current_index advances")
     planner = make_planner()
     route = make_straight_route(length_m=50.0)
 
@@ -165,6 +199,7 @@ def main():
 
     test_closest_index_advances_normally()
     test_ignores_distant_parallel_street()
+    test_respects_order_when_route_loops_near_itself()
     test_target_waypoint_lookahead_zero()
     test_target_waypoint_clamps_at_end()
     test_remaining_distance_monotonic()

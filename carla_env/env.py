@@ -92,6 +92,21 @@ SPAWN_HEIGHT_OFFSET_M = 0.5   # lift above a route waypoint's raw road-surface
                               # z when spawning there, to avoid a ground-
                               # clipping spawn collision (see reset())
 
+# Route line visualization: redrawn periodically with a short life_time
+# rather than once per episode with a life_time covering the whole
+# episode. CARLA has no API to explicitly clear a debug shape — it only
+# disappears when its own life_time expires — so a single long-lived
+# draw would leave a short episode's route still visible on screen after
+# the next episode's reset() draws a new one on top, showing two
+# overlapping routes at once. Periodic redraw with a short life_time
+# means a finished episode's route fades within ROUTE_DRAW_LIFETIME_S
+# regardless of when it actually ended.
+ROUTE_REDRAW_INTERVAL_STEPS = 20    # ~1s at 20Hz — cheap enough to redraw
+                                    # a few-hundred-segment route this often
+ROUTE_DRAW_LIFETIME_S       = 1.2   # slightly longer than the redraw
+                                    # interval so the line never flickers
+                                    # between redraws
+
 
 SPECTATOR_DISTANCE_M = 8.0    # meters behind the vehicle
 SPECTATOR_HEIGHT_M   = 4.0    # meters above the vehicle
@@ -555,10 +570,10 @@ class CarlaLaneKeepingEnv(gym.Env):
 
         # ── Draw the route in the CARLA world ───────────────────────────────────
         # Visualization aid only — CARLA's debug draw has no effect on
-        # training. life_time covers the whole episode so it doesn't need
-        # to be redrawn every tick.
+        # training. Short life_time, redrawn periodically in step() — see
+        # ROUTE_DRAW_LIFETIME_S's comment for why not a single long-lived draw.
         self._route_planner.draw_route(
-            self._world, self._route, life_time=self.max_steps * DELTA_SECONDS
+            self._world, self._route, life_time=ROUTE_DRAW_LIFETIME_S
         )
 
         # ── Move spectator camera to follow the vehicle ────────────────────────
@@ -694,6 +709,15 @@ class CarlaLaneKeepingEnv(gym.Env):
         self._route_planner.draw_target_waypoint(
             self._world, target_waypoint, life_time=DELTA_SECONDS * 2
         )
+
+        # ── Periodically refresh the route line ─────────────────────────────────
+        # See ROUTE_DRAW_LIFETIME_S's comment in the constants section for why
+        # this is a periodic short-lived redraw rather than a single
+        # episode-long one.
+        if self._step_count % ROUTE_REDRAW_INTERVAL_STEPS == 0:
+            self._route_planner.draw_route(
+                self._world, self._route, life_time=ROUTE_DRAW_LIFETIME_S
+            )
 
         # ── Read traffic light affordance ──────────────────────────────────────
         traffic_light = get_traffic_light_affordance(self._vehicle)
