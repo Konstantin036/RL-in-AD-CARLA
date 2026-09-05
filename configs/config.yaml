@@ -18,17 +18,25 @@ algo: ppo
 env:
   host:           "localhost"
   port:           2000
-  map_name:       "Town04"
+  map_name:       "Town10HD_Opt" # switched from Town04 (highway loop, no
+                                 #   intersections) to exercise route planning
+                                 #   and traffic-light compliance. Town03 was
+                                 #   the original intersection-map target but
+                                 #   currently segfaults CARLA on load on this
+                                 #   machine (engine/GPU issue, unrelated to
+                                 #   this project's code) — switch back once
+                                 #   that's fixed.
   max_steps:      1000          # steps per episode before truncation
   action_smooth:  0.6           # action smoother alpha (0=heavy, 1=none)
   seed:           42            # random seed for spawn point selection
-  spawn_index:    150           # int = always spawn here (deterministic,
-                                 #   for validating learning); null = random.
-                                 #   150 chosen on a straight Town04 segment
-                                 #   clear of any junction/fork for 450m ahead
-                                 #   (a full episode at target speed covers
-                                 #   ~417m). Index 0 hit a fork ~310m ahead,
-                                 #   causing collisions with barrels.
+  spawn_index:    null          # null = random spawn + destination every
+                                 #   episode — varied intersections/lights,
+                                 #   needed to generalize route planning and
+                                 #   traffic-light compliance across the map
+                                 #   rather than memorizing one fixed segment.
+                                 #   (Previously 150, fixed, tuned for a
+                                 #   straight Town04 segment — not meaningful
+                                 #   on Town10 and moot now.)
 
 # ── Reward function ───────────────────────────────────────────
 reward:
