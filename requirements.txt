@@ -6,6 +6,12 @@
 # CARLA Python API is installed separately from the CARLA package.
 # It is NOT a pip package. See README.md for setup instructions.
 
+# CARLA's PythonAPI/carla/agents package (GlobalRoutePlanner, used by
+# carla_env/route_planner.py) depends on networkx but doesn't declare it —
+# install it explicitly, and put PythonAPI/carla on PYTHONPATH so `agents`
+# is importable (e.g. via a .pth file in the conda env's site-packages).
+networkx==2.6.3                 # required by CARLA's GlobalRoutePlanner
+
 # Reinforcement Learning
 stable-baselines3==2.3.2        # PPO implementation we will use
 gymnasium==0.29.1               # Modern OpenAI Gym (SB3 2.x uses this)

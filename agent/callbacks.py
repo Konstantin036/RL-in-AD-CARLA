@@ -76,11 +76,14 @@ class EpisodeLoggerCallback(BaseCallback):
 
         # Termination reason counters (for logging distribution)
         self._term_counts = {
-            "collision":     0,
-            "off_road":      0,
-            "wrong_heading": 0,
-            "timeout":       0,
-            "other":         0,
+            "collision":           0,
+            "off_road":            0,
+            "wrong_heading":       0,
+            "stall":               0,
+            "red_light_violation": 0,
+            "destination_reached": 0,
+            "timeout":             0,
+            "other":               0,
         }
 
     def _on_training_start(self) -> None:

@@ -4,10 +4,10 @@ observation.py
 Phase 3 — Observation Space
 
 Purpose:
-    Given a CARLA vehicle actor and world, compute the 4-element
+    Given a CARLA vehicle actor and world, compute the 5-element
     observation vector that the RL agent receives at every step.
 
-    obs = [lateral_distance, heading_error, speed_norm, steering]
+    obs = [lateral_distance, heading_error, speed_norm, steering, traffic_light]
 
     All values are normalized to roughly [-1, 1] so the neural network
     gets consistently scaled inputs. Raw physical units are also available
@@ -27,6 +27,7 @@ Observation vector layout:
       1    heading_error     -1.0 … +1.0          radians off road direction
       2    speed             0.0 … 1.0            vehicle speed in km/h
       3    steering          -1.0 … +1.0          current steering wheel angle
+      4    traffic_light     -1.0 or +1.0         -1 = must stop now, +1 = clear
 
 Sign conventions:
     lateral_distance > 0  → vehicle is to the RIGHT of lane center
@@ -66,12 +67,16 @@ class ObservationData:
         heading_error_rad:  float,   # radians, signed
         speed_kmh:          float,   # km/h, always >= 0
         steering:           float,   # -1.0 to 1.0 (CARLA native)
+        traffic_light_must_stop: bool = False,  # True if a red/yellow light applies now
+        traffic_light_state:     str  = "None", # human-readable, for logging/debugging
         waypoint=None,               # carla.Waypoint (for debugging/rendering)
     ):
         self.lateral_distance_m = lateral_distance_m
         self.heading_error_rad  = heading_error_rad
         self.speed_kmh          = speed_kmh
         self.steering           = steering
+        self.traffic_light_must_stop = traffic_light_must_stop
+        self.traffic_light_state     = traffic_light_state
         self.waypoint           = waypoint
 
     def __repr__(self) -> str:
@@ -80,7 +85,9 @@ class ObservationData:
             f"lat={self.lateral_distance_m:+.2f}m, "
             f"hdg={math.degrees(self.heading_error_rad):+.1f}°, "
             f"spd={self.speed_kmh:.1f}km/h, "
-            f"steer={self.steering:+.2f})"
+            f"steer={self.steering:+.2f}, "
+            f"tl={self.traffic_light_state}"
+            f"{'[STOP]' if self.traffic_light_must_stop else ''})"
         )
 
 
@@ -230,31 +237,58 @@ def normalize_clip(value: float, max_abs: float) -> float:
 
 # ── Main observation builder ──────────────────────────────────────────────────
 
-def compute_observation(vehicle, carla_map) -> tuple:
+def compute_observation(vehicle, carla_map, route_waypoint=None, traffic_light=None) -> tuple:
     """
     Build the full observation for one step.
 
     This is the function called by env.py at every step() and reset().
 
     Args:
-        vehicle:    carla.Vehicle actor (the ego vehicle)
-        carla_map:  carla.Map  (from world.get_map())
+        vehicle:        carla.Vehicle actor (the ego vehicle)
+        carla_map:      carla.Map  (from world.get_map())
+        route_waypoint: optional RouteWaypoint (see carla_env/route_planner.py)
+                        to measure lateral_distance/heading_error against,
+                        instead of the nearest lane waypoint. Pass this
+                        whenever a route has been planned.
+
+                        Why this matters at intersections: carla_map.get_waypoint()
+                        (the fallback below) always snaps to whichever lane is
+                        physically closest, with no notion of where the car is
+                        actually supposed to go. Inside a junction that lane can
+                        belong to any of several crossing/turning paths, so the
+                        reward would tug the car toward a lane center that isn't
+                        on its route. Passing the planned route's target
+                        waypoint keeps the observation which-way-to-go aware,
+                        not just distance-to-nearest-road aware.
+
+                        None keeps the old nearest-lane behavior — used by
+                        callers that never planned a route (e.g.
+                        scripts/test_observation.py, manual_drive.py).
+        traffic_light:  optional TrafficLightAffordance (see
+                        carla_env/traffic_rules.py). None means "no
+                        constraint" (obs[4] = clear) — used by callers
+                        that never checked traffic lights.
 
     Returns:
-        obs_array:  np.ndarray of shape (4,), dtype float32
+        obs_array:  np.ndarray of shape (5,), dtype float32
                     normalized values ready for the neural network
         obs_data:   ObservationData with raw physical values
                     used for reward computation and logging
     """
 
-    # ── Get the nearest waypoint ───────────────────────────────────────────────
-    # project_to_road=True: snap to the nearest point ON the road
-    # lane_type=Driving:    ignore sidewalks and shoulders
-    waypoint = carla_map.get_waypoint(
-        vehicle.get_location(),
-        project_to_road=True,
-        lane_type=carla.LaneType.Driving,  # noqa (carla imported in env.py)
-    )
+    if route_waypoint is not None:
+        # Follow the planned route rather than "whatever lane is closest" —
+        # the only way to disambiguate direction inside a junction.
+        waypoint = route_waypoint.waypoint
+    else:
+        # ── Get the nearest waypoint ───────────────────────────────────────────
+        # project_to_road=True: snap to the nearest point ON the road
+        # lane_type=Driving:    ignore sidewalks and shoulders
+        waypoint = carla_map.get_waypoint(
+            vehicle.get_location(),
+            project_to_road=True,
+            lane_type=carla.LaneType.Driving,  # noqa (carla imported in env.py)
+        )
 
     # ── Compute raw values ────────────────────────────────────────────────────
     lateral_distance = get_lateral_distance(vehicle, waypoint)
@@ -262,12 +296,17 @@ def compute_observation(vehicle, carla_map) -> tuple:
     speed_kmh        = get_speed_kmh(vehicle)
     steering         = get_steering(vehicle)
 
+    must_stop      = traffic_light.must_stop if traffic_light is not None else False
+    light_state    = traffic_light.state     if traffic_light is not None else "None"
+
     # ── Build raw data object (for reward + logging) ──────────────────────────
     obs_data = ObservationData(
         lateral_distance_m=lateral_distance,
         heading_error_rad=heading_error,
         speed_kmh=speed_kmh,
         steering=steering,
+        traffic_light_must_stop=must_stop,
+        traffic_light_state=light_state,
         waypoint=waypoint,
     )
 
@@ -277,6 +316,7 @@ def compute_observation(vehicle, carla_map) -> tuple:
         normalize_clip(heading_error,    MAX_HEADING_ERROR_RAD),     # obs[1]
         normalize_clip(speed_kmh,        MAX_SPEED_KMH),             # obs[2]
         float(np.clip(steering, -1.0, 1.0)),                         # obs[3]
+        -1.0 if must_stop else 1.0,                                   # obs[4]
     ], dtype=np.float32)
 
     return obs_array, obs_data
@@ -289,14 +329,14 @@ def get_observation_space():
     Return the Gymnasium observation space definition.
 
     This tells the RL algorithm the shape and bounds of what the agent sees.
-    We use a Box space: a 4D continuous vector, all values in [-1, 1].
+    We use a Box space: a 5D continuous vector, all values in [-1, 1].
 
     Called once during environment initialization (env.py __init__).
     """
     import gymnasium as gym
     return gym.spaces.Box(
-        low=np.array([-1.0, -1.0,  0.0, -1.0], dtype=np.float32),
-        high=np.array([ 1.0,  1.0,  1.0,  1.0], dtype=np.float32),
+        low=np.array([-1.0, -1.0,  0.0, -1.0, -1.0], dtype=np.float32),
+        high=np.array([ 1.0,  1.0,  1.0,  1.0,  1.0], dtype=np.float32),
         dtype=np.float32,
     )
 

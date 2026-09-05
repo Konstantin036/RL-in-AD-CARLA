@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from carla_env.reward import (
     RewardConfig,
     RewardInfo,
+    StallDetector,
     compute_centering_reward,
     compute_speed_reward,
     compute_heading_reward,
@@ -229,22 +230,23 @@ def test_termination():
         return ObservationData(lat, math.radians(hdg_deg), spd, 0.0)
 
     cases = [
-        # (obs_kwargs, collision, step, max_steps, expected_term, expected_trunc, note)
-        (dict(lat=0.0, hdg_deg=0.0),    False, 100,  1000, False, False, "normal step"),
-        (dict(lat=0.0, hdg_deg=0.0),    True,  100,  1000, True,  False, "collision"),
-        (dict(lat=4.0, hdg_deg=0.0),    False, 100,  1000, True,  False, "off road"),
-        (dict(lat=0.0, hdg_deg=95.0),   False, 100,  1000, True,  False, "wrong heading"),
-        (dict(lat=0.0, hdg_deg=0.0),    False, 1000, 1000, False, True,  "timeout"),
+        # (obs_kwargs, collision, step, max_steps, red_light, expected_term, expected_trunc, note)
+        (dict(lat=0.0, hdg_deg=0.0),    False, 100,  1000, False, False, False, "normal step"),
+        (dict(lat=0.0, hdg_deg=0.0),    True,  100,  1000, False, True,  False, "collision"),
+        (dict(lat=4.0, hdg_deg=0.0),    False, 100,  1000, False, True,  False, "off road"),
+        (dict(lat=0.0, hdg_deg=95.0),   False, 100,  1000, False, True,  False, "wrong heading"),
+        (dict(lat=0.0, hdg_deg=0.0),    False, 100,  1000, True,  True,  False, "red light violation"),
+        (dict(lat=0.0, hdg_deg=0.0),    False, 1000, 1000, False, False, True,  "timeout"),
     ]
 
     print(f"  {'collision':>10}  {'lat':>5}  {'hdg°':>6}  "
           f"{'step':>5}  {'term':>6}  {'trunc':>6}  note")
     print("  " + "-" * 62)
 
-    for obs_kw, collision, step, max_steps, exp_term, exp_trunc, note in cases:
+    for obs_kw, collision, step, max_steps, red_light, exp_term, exp_trunc, note in cases:
         obs = make_obs(**obs_kw)
         term, trunc, reason = check_termination(
-            obs, collision, step, max_steps
+            obs, collision, step, max_steps, red_light_violation=red_light
         )
         ok_term  = (term  == exp_term)
         ok_trunc = (trunc == exp_trunc)
@@ -259,10 +261,54 @@ def test_termination():
     print("  ✓ PASSED")
 
 
-# ── Test 6: Reward range sanity check ─────────────────────────────────────────
+# ── Test 6: StallDetector red-light exemption ─────────────────────────────────
+
+def test_stall_detector_red_light_exemption():
+    sep("6. StallDetector: waiting at a red light never counts as stalling")
+    cfg = RewardConfig(stall_min_speed_kmh=2.0, stall_patience_steps=5)
+    detector = StallDetector(cfg)
+
+    # Genuinely stalling (not at a light) — should trigger after patience_steps.
+    detector.reset()
+    triggered_at = None
+    for step in range(10):
+        stalled = detector.update(speed_kmh=0.0, must_stop=False)
+        if stalled:
+            triggered_at = step
+            break
+    ok1 = triggered_at == cfg.stall_patience_steps - 1
+    print(f"  genuine stall triggers at step {triggered_at} "
+          f"(expected {cfg.stall_patience_steps - 1}): {'✓' if ok1 else '✗'}")
+
+    # Waiting at a red light for far longer than patience_steps — never flagged.
+    detector.reset()
+    any_triggered = any(
+        detector.update(speed_kmh=0.0, must_stop=True) for _ in range(50)
+    )
+    ok2 = not any_triggered
+    print(f"  50 steps waiting at red never triggers stall: {'✓' if ok2 else '✗'}")
+
+    # Light turns green but car still doesn't move — full patience window
+    # available again (must_stop=True resets the counter, doesn't just pause it).
+    fresh_triggered_at = None
+    for step in range(10):
+        stalled = detector.update(speed_kmh=0.0, must_stop=False)
+        if stalled:
+            fresh_triggered_at = step
+            break
+    ok3 = fresh_triggered_at == cfg.stall_patience_steps - 1
+    print(f"  post-green stall still needs full patience window "
+          f"(triggered at {fresh_triggered_at}): {'✓' if ok3 else '✗'}")
+
+    ok = ok1 and ok2 and ok3
+    print(f"  {'✓' if ok else '✗'} PASSED")
+    assert ok
+
+
+# ── Test 7: Reward range sanity check ─────────────────────────────────────────
 
 def test_reward_range():
-    sep("6. Reward range sanity check")
+    sep("7. Reward range sanity check")
     cfg = RewardConfig()
     import random
     random.seed(42)
@@ -313,6 +359,7 @@ def main():
     test_reward_config_from_dict()
     test_full_reward()
     test_termination()
+    test_stall_detector_red_light_exemption()
     test_reward_range()
 
     print(f"\n{'='*60}")

@@ -107,6 +107,14 @@ class RewardConfig:
     stall_min_speed_kmh: float = 2.0   # below this speed counts as stalling
     stall_patience_steps: int  = 100   # steps below min speed before termination
 
+    # ── Red light violation ────────────────────────────────────────────────────
+    # Terminates the episode (with terminal_penalty, same severity as a
+    # collision) if the car drives through a red/yellow light instead of
+    # stopping. See carla_env/traffic_rules.RedLightViolationDetector for
+    # the "exits the zone while still moving" detection logic.
+    red_light_enabled: bool       = True
+    red_light_stop_speed_kmh: float = 5.0  # below this speed counts as stopped
+
     @classmethod
     def from_dict(cls, reward_cfg: dict) -> "RewardConfig":
         """
@@ -129,6 +137,8 @@ class RewardConfig:
             stall_enabled        = reward_cfg.get("stall_enabled",        True),
             stall_min_speed_kmh  = reward_cfg.get("stall_min_speed_kmh",  2.0),
             stall_patience_steps = reward_cfg.get("stall_patience_steps", 100),
+            red_light_enabled         = reward_cfg.get("red_light_enabled",         True),
+            red_light_stop_speed_kmh  = reward_cfg.get("red_light_stop_speed_kmh",  5.0),
         )
 
 
@@ -382,12 +392,22 @@ class StallDetector:
     def reset(self):
         self._slow_steps = 0
 
-    def update(self, speed_kmh: float) -> bool:
+    def update(self, speed_kmh: float, must_stop: bool = False) -> bool:
         """
         Call every step with the current speed.
         Returns True when the car has been stalled long enough to terminate.
+
+        must_stop: True if a red/yellow traffic light currently applies
+            (see carla_env/traffic_rules.TrafficLightAffordance). Waiting
+            at a red light is correct behavior, not stalling — without
+            this, an agent that properly stops for a light would get hit
+            with the same terminal penalty as one that's actually stuck,
+            directly undermining the red-light-compliance objective.
         """
         if not self.enabled:
+            return False
+        if must_stop:
+            self._slow_steps = 0
             return False
         if speed_kmh < self.min_speed_kmh:
             self._slow_steps += 1
@@ -406,6 +426,7 @@ def check_termination(
     max_lateral_m: float = 3.5,
     max_heading_deg: float = 90.0,
     stall_flag: bool = False,
+    red_light_violation: bool = False,
 ) -> tuple:
     """
     Decide whether the current episode should end.
@@ -421,19 +442,21 @@ def check_termination(
 
     Termination conditions (agent's fault):
         1. Collision detected by CARLA collision sensor
-        2. Lateral distance exceeds max_lateral_m (off road)
-        3. Heading error exceeds max_heading_deg (pointing wrong way)
+        2. Red/yellow light violation (drove through instead of stopping)
+        3. Lateral distance exceeds max_lateral_m (off road)
+        4. Heading error exceeds max_heading_deg (pointing wrong way)
 
     Truncation condition (timeout):
-        4. step_count >= max_steps
+        5. step_count >= max_steps
 
     Args:
-        obs_data:       ObservationData from current step
-        collision_flag: True if collision sensor fired this step
-        step_count:     current step number in this episode
-        max_steps:      episode length limit
-        max_lateral_m:  lateral distance threshold for off-road
-        max_heading_deg: heading error threshold in degrees
+        obs_data:            ObservationData from current step
+        collision_flag:      True if collision sensor fired this step
+        step_count:          current step number in this episode
+        max_steps:           episode length limit
+        max_lateral_m:       lateral distance threshold for off-road
+        max_heading_deg:     heading error threshold in degrees
+        red_light_violation: True if RedLightViolationDetector fired this step
     """
     # ── Stall ──────────────────────────────────────────────────────────────────
     if stall_flag:
@@ -442,6 +465,10 @@ def check_termination(
     # ── Collision ──────────────────────────────────────────────────────────────
     if collision_flag:
         return True, False, "collision"
+
+    # ── Red light violation ───────────────────────────────────────────────────
+    if red_light_violation:
+        return True, False, "red_light_violation"
 
     # ── Off road ───────────────────────────────────────────────────────────────
     if abs(obs_data.lateral_distance_m) >= max_lateral_m:

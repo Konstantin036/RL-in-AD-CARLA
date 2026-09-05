@@ -43,10 +43,12 @@ carla_rl_project/
 ├── carla_env/                  # The RL environment — core thesis contribution
 │   ├── __init__.py
 │   ├── env.py                  # Main Gym environment (CarlaLaneKeepingEnv)
-│   ├── observation.py          # Builds the 4D observation vector
+│   ├── observation.py          # Builds the 5D observation vector
 │   ├── action.py               # Action space + smoother + CARLA control mapping
 │   ├── reward.py               # Reward function + termination conditions
-│   └── sensors.py              # Collision sensor wrapper
+│   ├── sensors.py              # Collision sensor wrapper
+│   ├── route_planner.py        # Global route planning + route-relative waypoint tracking
+│   └── traffic_rules.py        # Traffic-light affordance + red-light violation detection
 │
 ├── agent/                      # RL training pipeline
 │   ├── __init__.py
@@ -104,20 +106,23 @@ CarlaLaneKeepingEnv (env.py)
     └── step(action)
           ├── ActionProcessor.process(action)   smooth + apply VehicleControl
           ├── world.tick()                       advance simulation 0.05s
-          ├── compute_observation()              build 4D obs vector
-          ├── check_termination()                collision / off_road / timeout
+          ├── RoutePlanner.get_target_waypoint() route-relative waypoint (not nearest-lane)
+          ├── get_traffic_light_affordance()      ground-truth traffic light state
+          ├── compute_observation()              build 5D obs vector
+          ├── check_termination()                collision / red_light / off_road / timeout
           ├── compute_reward()                   dense reward signal
           └── return (obs, reward, terminated, truncated, info)
 ```
 
-### Observation vector (4D)
+### Observation vector (5D)
 
 ```
 Index  Name              Raw range         Normalized   Source
-  0    lateral_distance  -3.5 … +3.5 m    -1 … +1      waypoint projection
-  1    heading_error     -π … +π rad       -1 … +1      yaw difference
+  0    lateral_distance  -3.5 … +3.5 m    -1 … +1      route waypoint projection
+  1    heading_error     -π … +π rad       -1 … +1      yaw difference vs. route waypoint
   2    speed             0 … 80 km/h       0 … +1       velocity magnitude
   3    steering          -1 … +1           -1 … +1      vehicle.get_control()
+  4    traffic_light     -1 or +1          -1 or +1     -1 = must stop now, +1 = clear
 ```
 
 ### Action vector (2D)
@@ -170,7 +175,7 @@ are needed.
 r = w_center  * (1 - |lat| / max_lat)
   + w_speed   * exp(-((spd - target)² / (2σ²)))
   + w_heading * (1 - |hdg| / π)
-  + terminal_penalty   (only on collision/off_road)
+  + terminal_penalty   (only on collision/off_road/red_light_violation/stall)
   + step_penalty       (every step)
 ```
 
@@ -184,12 +189,59 @@ Current weights (in configs/config.yaml):
 ```
 terminated (agent's fault — apply terminal penalty):
     - collision sensor fired
+    - red/yellow light violation (drove through instead of stopping)
     - |lateral_distance| >= 3.5 m  (off road)
     - |heading_error| >= 90°       (pointing wrong way)
+    - stall (below stall_min_speed_kmh for stall_patience_steps)
+
+terminated (success):
+    - destination_reached (within DESTINATION_REACHED_M of the planned
+      route's endpoint)
 
 truncated (timeout — no penalty):
     - step_count >= max_steps (1000 steps = 50 simulated seconds)
 ```
+
+### Route planning and traffic-light compliance
+
+Two ground-truth "affordances" feed the observation/reward on top of raw
+sensor state, both designed to be swapped for a learned/perception-based
+version later without touching env.py's call structure, observation.py,
+or reward.py:
+
+- **Route waypoint** (`carla_env/route_planner.py`): `RoutePlanner` runs
+  CARLA's `GlobalRoutePlanner` once per episode (`reset()`) between the
+  spawn point and a chosen destination, then `env.py` tracks the closest
+  route index every step and looks up a waypoint 5 steps ahead
+  (`get_target_waypoint()`). `compute_observation()` measures
+  lateral_distance/heading_error against *that* waypoint instead of
+  `carla_map.get_waypoint()`'s "nearest lane, no matter which" lookup —
+  the only way to disambiguate direction inside a junction, where the
+  physically-closest lane can belong to a crossing or turning path that
+  isn't on the route.
+
+- **Traffic light** (`carla_env/traffic_rules.py`): `get_traffic_light_affordance()`
+  reads CARLA's own ground truth (`vehicle.is_at_traffic_light()` /
+  `get_traffic_light_state()`) into a small `TrafficLightAffordance`
+  (`is_at_light`, `must_stop`, `state`). `RedLightViolationDetector`
+  (same shape as `StallDetector`: `reset()` per episode, `update()` per
+  step) flags a violation the moment the vehicle *exits* a red/yellow
+  trigger zone while still moving above `red_light_stop_speed_kmh` — not
+  the whole time `must_stop` is True, which would falsely punish normal
+  braking distance. Waiting for green (must_stop going False while still
+  in the zone) before exiting is never flagged.
+
+  Stop signs are intentionally out of scope for the first pass — the
+  plan is a sibling `get_stop_sign_affordance()` /
+  `StopSignViolationDetector` pair in the same file, same shape, added
+  later. Eventually a vision-based light/sign detector can replace the
+  ground-truth reads at their single call site in `env.py` without any
+  other module needing to change.
+
+  Adding the traffic-light dimension changed the observation space from
+  4D to 5D — any checkpoint trained before this change will not load
+  into a model built after it (input layer size mismatch). This is an
+  expected consequence of extending the state representation, not a bug.
 
 ---
 
@@ -224,6 +276,7 @@ python scripts/verify_carla.py
 # Run offline unit tests (no CARLA needed)
 python scripts/test_action.py
 python scripts/test_reward.py
+python scripts/test_traffic_rules.py
 
 # Run live integration test (CARLA must be running)
 python scripts/test_env.py

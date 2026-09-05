@@ -60,6 +60,14 @@ reward:
   stall_min_speed_kmh:  2.0    # below this counts as stalling
   stall_patience_steps: 100    # ~5 simulated seconds at 20 Hz
 
+  # Red light violation — ends the episode (with terminal_penalty, same
+  # severity as a collision) if the car drives through a red/yellow light
+  # instead of stopping. Ground truth today (CARLA's own traffic light
+  # API); swappable later for a vision-based detector without touching
+  # this config — see carla_env/traffic_rules.py.
+  red_light_enabled:        true
+  red_light_stop_speed_kmh: 5.0   # below this counts as stopped
+
 # ── PPO hyperparameters ───────────────────────────────────────
 # These are Stable-Baselines3 PPO defaults, tuned for CARLA.
 # See: https://stable-baselines3.readthedocs.io/en/master/modules/ppo.html

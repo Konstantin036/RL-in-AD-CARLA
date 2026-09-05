@@ -39,6 +39,7 @@ import sys
 import os
 import time
 import math
+import argparse
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -46,8 +47,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # ── Pygame display constants ───────────────────────────────────────────────────
 
-WINDOW_WIDTH  = 500
-WINDOW_HEIGHT = 300
+WINDOW_WIDTH  = 560
+WINDOW_HEIGHT = 620
 FPS_TARGET    = 20   # match CARLA's sync rate
 
 
@@ -84,7 +85,9 @@ class HUD:
             return self.RED
 
     def render(self, obs_data, reward_info, step, episode,
-               throttle, brake, steer, terminated, truncated, term_reason):
+               throttle, brake, steer, terminated, truncated, term_reason,
+               route_index=0, route_length=0, remaining_distance=0.0,
+               destination_reached=False, red_light_violation=False):
         """Draw the full HUD onto the pygame screen."""
         self.screen.fill((20, 20, 20))   # dark background
 
@@ -125,6 +128,31 @@ class HUD:
         y += line_h
         text(f"Steering:      {steer_val:+.2f}", 30, y)
         y += line_h + 4
+
+        # ── Route / traffic light ─────────────────────────────────────────────
+        text("── Route / Traffic Light ──", 20, y, self.GRAY)
+        y += line_h
+
+        tl_state    = obs_data.traffic_light_state
+        must_stop   = obs_data.traffic_light_must_stop
+        tl_color    = self.RED if must_stop else self.GREEN
+
+        text(f"Route:         waypoint {route_index}/{route_length}  "
+             f"({remaining_distance:.1f} m left)", 30, y)
+        y += line_h
+        text(f"Traffic light: {tl_state}"
+             f"{'  MUST STOP' if must_stop else ''}", 30, y, tl_color)
+        y += line_h
+
+        if red_light_violation:
+            text("RED LIGHT VIOLATION!", 30, y, self.RED, big=True)
+            y += 32
+        elif destination_reached:
+            text("Destination reached!", 30, y, self.GREEN, big=True)
+            y += 32
+        else:
+            y += line_h
+        y += 4
 
         # ── Reward breakdown ───────────────────────────────────────────────────
         text("── Reward ──", 20, y, self.GRAY)
@@ -171,9 +199,18 @@ class HUD:
 
 # ── Main manual drive loop ─────────────────────────────────────────────────────
 
-def run_manual_drive():
+def run_manual_drive(map_name: str = "Town10HD_Opt"):
     """
     Main loop: pygame window + CARLA environment + keyboard control.
+
+    Args:
+        map_name: which CARLA map to drive on. Defaults to Town10HD_Opt
+            (not Town03) — Town03 currently segfaults this project's
+            CARLA install on load_world(), a CARLA/engine/GPU-driver
+            issue unrelated to this project's code. Town10HD_Opt has
+            plenty of signalized intersections too, so it still
+            exercises route planning and traffic-light compliance.
+            Switch back to Town03 with --map once that crash is fixed.
     """
 
     # ── Import pygame ──────────────────────────────────────────────────────────
@@ -200,11 +237,11 @@ def run_manual_drive():
     hud = HUD(screen, font, font_small)
 
     # ── Create environment ─────────────────────────────────────────────────────
-    print("[INFO] Creating environment ...")
+    print(f"[INFO] Creating environment on map={map_name} ...")
     env = CarlaLaneKeepingEnv(
         host      = "localhost",
         port      = 2000,
-        map_name  = "Town03",
+        map_name  = map_name,
         max_steps = 2000,     # long episodes for manual testing
         verbose   = False,
     )
@@ -228,7 +265,7 @@ def run_manual_drive():
     from carla_env.reward      import RewardInfo
     import math as _math
     obs_data    = ObservationData(0.0, 0.0, 0.0, 0.0)
-    reward_info = RewardInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False)
+    reward_info = RewardInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False)
 
     print("[INFO] Manual drive started. Click the pygame window and use WASD to drive.")
     print("[INFO] Press R to reset, Q or ESC to quit.")
@@ -290,18 +327,25 @@ def run_manual_drive():
                 heading_error_rad  = _math.radians(info["heading_error_deg"]),
                 speed_kmh          = info["speed_kmh"],
                 steering           = info["steering"],
+                traffic_light_must_stop = info["traffic_light_must_stop"],
+                traffic_light_state     = info["traffic_light_state"],
             )
 
             from carla_env.reward import RewardInfo
             reward_info = RewardInfo(
-                total       = info["reward_total"],
-                r_centering = info["reward_centering"],
-                r_speed     = info["reward_speed"],
-                r_heading   = info["reward_heading"],
-                r_terminal  = info["reward_terminal"],
-                r_step      = -0.05,
-                is_terminal = terminated,
+                total        = info["reward_total"],
+                r_centering  = info["reward_centering"],
+                r_speed      = info["reward_speed"],
+                r_heading    = info["reward_heading"],
+                r_smoothness = info["reward_smoothness"],
+                r_progress   = 0.0,   # not currently exposed in env.py's info dict
+                r_terminal   = info["reward_terminal"],
+                r_step       = -0.05,
+                is_terminal  = terminated,
             )
+
+            if info.get("red_light_violation"):
+                print(f"[INFO] RED LIGHT VIOLATION at step {step}.")
 
             # Auto-reset on episode end
             if terminated or truncated:
@@ -332,4 +376,11 @@ def run_manual_drive():
 
 
 if __name__ == "__main__":
-    run_manual_drive()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--map", default="Town10HD_Opt",
+        help="CARLA map to drive on (default: Town10HD_Opt — Town03 "
+             "currently segfaults this project's CARLA install on load)",
+    )
+    args = parser.parse_args()
+    run_manual_drive(map_name=args.map)

@@ -66,6 +66,10 @@ from carla_env.reward      import (
     check_termination,
 )
 from carla_env.sensors     import CollisionSensor
+from carla_env.traffic_rules import get_traffic_light_affordance, RedLightViolationDetector
+
+from carla_env.route_planner import RoutePlanner
+
 
 
 # ── Module logger ──────────────────────────────────────────────────────────────
@@ -83,6 +87,8 @@ DEFAULT_MAP     = "Town03"
 DEFAULT_HOST    = "localhost"
 DEFAULT_PORT    = 2000
 DEFAULT_TIMEOUT = 10.0
+DESTINATION_REACHED_M = 5.0
+
 
 SPECTATOR_DISTANCE_M = 8.0    # meters behind the vehicle
 SPECTATOR_HEIGHT_M   = 4.0    # meters above the vehicle
@@ -242,8 +248,16 @@ class CarlaLaneKeepingEnv(gym.Env):
         # ── Stall detector ─────────────────────────────────────────────────────
         self._stall_detector = StallDetector(self.reward_config)
 
+        # ── Red light violation detector ───────────────────────────────────────
+        self._red_light_detector = RedLightViolationDetector(self.reward_config)
+
         # ── Random number generator for spawn point selection ──────────────────
         self._rng = random.Random(seed)
+
+        # ── Route planning ───────────────────────────────────────────────────── 
+        self._route_planner = None
+        self._route = []
+        self._route_index = 0
 
         # ── Connect to CARLA once at init ──────────────────────────────────────
         # We connect here rather than in reset() so connection errors are
@@ -287,6 +301,8 @@ class CarlaLaneKeepingEnv(gym.Env):
         logger.info(f"Map loaded. Spawn points: {len(self._spawn_points)}")
 
         _check_spawn_index_in_range(self.spawn_index, len(self._spawn_points))
+
+        self._route_planner = RoutePlanner(self._carla_map, sampling_resolution=2.0)
 
         # Enable synchronous mode once — stays on for the entire training run.
         # We only disable it in close().
@@ -425,6 +441,22 @@ class CarlaLaneKeepingEnv(gym.Env):
         )
         self._world.get_spectator().set_transform(cam_transform)
 
+    def _destination_reached(self) -> bool:
+        """Return True when the vehicle is close enough to the route destination."""
+        if not self._route:
+            return False
+
+        destination = self._route[-1].waypoint.transform.location
+        vehicle_location = self._vehicle.get_transform().location
+
+        return (
+            self._route_planner.distance(
+                vehicle_location,
+                destination,
+            )
+            <= DESTINATION_REACHED_M
+        )
+
     # ── Gymnasium interface ────────────────────────────────────────────────────
 
     def reset(self, seed=None, options=None):
@@ -458,6 +490,50 @@ class CarlaLaneKeepingEnv(gym.Env):
         # ── Spawn new vehicle ──────────────────────────────────────────────────
         self._vehicle = self._spawn_vehicle()
 
+        # ── Generate route ─────────────────────────────────────────────────────
+        #start_location = self._vehicle.get_transform().location
+        
+        # ── Generate route ─────────────────────────────────────────────────────
+        start_location = self._last_spawn_transform.location
+
+        # Choose a destination different from the spawn point.
+        if self.spawn_index is not None:
+            effective_spawn_index = _compute_effective_spawn_index(
+                self.spawn_index,
+                self.spawn_index_offset,
+                len(self._spawn_points),
+            )
+
+            destination_index = (
+                effective_spawn_index + 20
+            ) % len(self._spawn_points)
+        else:
+            destination_index = self._rng.randrange(len(self._spawn_points))
+
+        destination_transform = self._spawn_points[destination_index]
+        destination_location = destination_transform.location
+
+        self._route = self._route_planner.plan_route(
+            start_location,
+            destination_location,
+        )
+
+        self._route_index = 0
+
+        logger.info(
+            f"Route generated: {len(self._route)} waypoints, "
+            f"destination=({destination_location.x:.1f}, "
+            f"{destination_location.y:.1f})"
+        )
+
+        # ── Draw the route in the CARLA world ───────────────────────────────────
+        # Visualization aid only — CARLA's debug draw has no effect on
+        # training. life_time covers the whole episode so it doesn't need
+        # to be redrawn every tick.
+        self._route_planner.draw_route(
+            self._world, self._route, life_time=self.max_steps * DELTA_SECONDS
+        )
+
         # ── Move spectator camera to follow the vehicle ────────────────────────
         # Visualization aid only — CARLA's spectator never moves on its own.
         self._snap_spectator_to_vehicle(self._last_spawn_transform)
@@ -487,6 +563,9 @@ class CarlaLaneKeepingEnv(gym.Env):
         # ── Reset stall detector ───────────────────────────────────────────────
         self._stall_detector.reset()
 
+        # ── Reset red light violation detector ─────────────────────────────────
+        self._red_light_detector.reset()
+
         # ── Reset smoothness-reward tracking ────────────────────────────────────
         # Same reasoning as the action smoother: without this, the first
         # action of a new episode would be compared against the last
@@ -494,13 +573,43 @@ class CarlaLaneKeepingEnv(gym.Env):
         self._previous_raw_action = np.zeros(2, dtype=np.float32)
 
         # ── Compute initial observation ────────────────────────────────────────
-        obs_array, obs_data = compute_observation(self._vehicle, self._carla_map)
+        # lookahead=0: the closest route waypoint, not one further ahead.
+        # lateral_distance/heading_error are measured against this point, so
+        # it needs to reflect where the car actually is right now — a point
+        # further down the route can already be mid-curve, producing a large
+        # apparent lateral_distance that has nothing to do with real lane
+        # position (confirmed via live testing: caused spurious off-road
+        # terminations on routes with an early turn or a short route where
+        # lookahead overshot almost to the destination).
+        target_waypoint = self._route_planner.get_target_waypoint(
+            self._route, self._route_index, lookahead=0
+        )
+        self._route_planner.draw_target_waypoint(
+            self._world, target_waypoint, life_time=DELTA_SECONDS * 2
+        )
+
+        traffic_light = get_traffic_light_affordance(self._vehicle)
+
+        obs_array, obs_data = compute_observation(
+            self._vehicle,
+            self._carla_map,
+            route_waypoint=target_waypoint,
+            traffic_light=traffic_light,
+        )
 
         info = {
             "episode":          self._episode_count,
             "lateral_distance": obs_data.lateral_distance_m,
             "heading_error":    obs_data.heading_error_rad,
             "speed_kmh":        obs_data.speed_kmh,
+            "traffic_light_state":     obs_data.traffic_light_state,
+            "traffic_light_must_stop": obs_data.traffic_light_must_stop,
+            "route_index": self._route_index,
+            "route_length": len(self._route),
+            "remaining_distance": self._route_planner.remaining_distance(
+                self._route,
+                self._route_index,
+            ),
         }
 
         return obs_array, info
@@ -540,22 +649,65 @@ class CarlaLaneKeepingEnv(gym.Env):
         # for why step() (unlike reset()) can safely use get_transform() directly.
         self._snap_spectator_to_vehicle(self._vehicle.get_transform())
 
+        # ── Update route tracking ──────────────────────────────────────────────
+        current_location = self._vehicle.get_transform().location
+
+        self._route_index = self._route_planner.get_closest_waypoint_index(
+            self._route,
+            current_location,
+            start_index=self._route_index,
+        )
+
+        # lookahead=0 — see the matching comment in reset() for why.
+        target_waypoint = self._route_planner.get_target_waypoint(
+            self._route,
+            self._route_index,
+            lookahead=0,
+        )
+        self._route_planner.draw_target_waypoint(
+            self._world, target_waypoint, life_time=DELTA_SECONDS * 2
+        )
+
+        # ── Read traffic light affordance ──────────────────────────────────────
+        traffic_light = get_traffic_light_affordance(self._vehicle)
+
         # ── Compute new observation ────────────────────────────────────────────
-        obs_array, obs_data = compute_observation(self._vehicle, self._carla_map)
+        obs_array, obs_data = compute_observation(
+            self._vehicle,
+            self._carla_map,
+            route_waypoint=target_waypoint,
+            traffic_light=traffic_light,
+        )
+
+        # ── Check whether destination was reached ──────────────────────────────
+        destination_reached = self._destination_reached()
 
         # ── Check termination ──────────────────────────────────────────────────
         collision_flag = self._collision_sensor.has_collided
         self._step_count += 1
-        stall_flag = self._stall_detector.update(obs_data.speed_kmh)
+        stall_flag = self._stall_detector.update(
+            obs_data.speed_kmh, must_stop=obs_data.traffic_light_must_stop
+        )
+        red_light_violation = self._red_light_detector.update(
+            traffic_light, obs_data.speed_kmh
+        )
 
         terminated, truncated, term_reason = check_termination(
-            obs_data         = obs_data,
-            collision_flag   = collision_flag,
-            step_count       = self._step_count,
-            max_steps        = self.max_steps,
-            max_lateral_m    = self.reward_config.max_lateral_m,
-            stall_flag       = stall_flag,
+            obs_data             = obs_data,
+            collision_flag       = collision_flag,
+            step_count           = self._step_count,
+            max_steps            = self.max_steps,
+            max_lateral_m        = self.reward_config.max_lateral_m,
+            stall_flag           = stall_flag,
+            red_light_violation  = red_light_violation,
         )
+
+        # Reaching the destination is a successful termination.
+        if destination_reached and not terminated:
+            terminated = True
+            truncated = False
+            term_reason = "destination_reached"
+
 
         # Terminal penalty only on agent failure, not on timeout
         is_terminal_for_reward = terminated   # not truncated
@@ -587,6 +739,8 @@ class CarlaLaneKeepingEnv(gym.Env):
             "heading_error_deg":np.degrees(obs_data.heading_error_rad),
             "speed_kmh":        obs_data.speed_kmh,
             "steering":         obs_data.steering,
+            "traffic_light_state":     obs_data.traffic_light_state,
+            "traffic_light_must_stop": obs_data.traffic_light_must_stop,
             # Reward breakdown
             "reward_total":      reward_info.total,
             "reward_centering":  reward_info.r_centering,
@@ -597,7 +751,16 @@ class CarlaLaneKeepingEnv(gym.Env):
             # Episode
             "episode_reward":   self._episode_reward,
             "collision":        collision_flag,
+            "red_light_violation": red_light_violation,
             "termination_reason": term_reason,
+            # Route
+            "route_index": self._route_index,
+            "route_length": len(self._route),
+            "destination_reached": destination_reached,
+            "remaining_distance": self._route_planner.remaining_distance(
+                self._route,
+                self._route_index,
+            ),
         }
 
         if self.verbose:
