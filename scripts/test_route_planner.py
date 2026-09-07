@@ -46,6 +46,25 @@ class FakeWaypoint:
         self.is_junction = is_junction
 
 
+class FakeLaneWaypoint:
+    """
+    Stand-in for a carla.Waypoint with lane topology, for
+    count_same_direction_lanes(). left/right are FakeLaneWaypoint or None.
+    """
+    def __init__(self, lane_id, lane_type, left=None, right=None):
+        import carla
+        self.lane_id = lane_id
+        self.lane_type = lane_type if lane_type is not None else carla.LaneType.Driving
+        self._left = left
+        self._right = right
+
+    def get_left_lane(self):
+        return self._left
+
+    def get_right_lane(self):
+        return self._right
+
+
 def make_straight_route(length_m=100.0, spacing_m=2.0):
     """A route running along the x-axis from (0,0) to (length_m,0)."""
     n = int(length_m / spacing_m) + 1
@@ -214,6 +233,37 @@ def test_target_waypoint_clamps_at_end():
     assert ok
 
 
+# ── Test 7b: count_same_direction_lanes counts only same-direction lanes ──────
+
+def test_count_same_direction_lanes():
+    sep("7b. count_same_direction_lanes() stops at the opposite-direction "
+        "side and ignores non-Driving lanes")
+    import carla
+    planner = make_planner()
+
+    # Layout, left to right: opposite lane (-1) — shoulder (non-Driving) —
+    # lane1 (self) — lane2 — lane3 (rightmost). Construct all nodes first,
+    # then wire left/right explicitly so the linkage is unambiguous.
+    opposite = FakeLaneWaypoint(lane_id=-1, lane_type=carla.LaneType.Driving)
+    shoulder = FakeLaneWaypoint(lane_id=2, lane_type=carla.LaneType.Shoulder)
+    lane1 = FakeLaneWaypoint(lane_id=1, lane_type=carla.LaneType.Driving)
+    lane2 = FakeLaneWaypoint(lane_id=2, lane_type=carla.LaneType.Driving)
+    lane3 = FakeLaneWaypoint(lane_id=3, lane_type=carla.LaneType.Driving)
+
+    opposite._right, shoulder._left = shoulder, opposite
+    shoulder._right, lane1._left    = lane1, shoulder
+    lane1._right,    lane2._left    = lane2, lane1
+    lane2._right,    lane3._left    = lane3, lane2
+
+    count = planner.count_same_direction_lanes(lane1)
+    # Same-direction lanes: lane1 (self) + lane2 + lane3 = 3. The shoulder
+    # (non-Driving) and the opposite-direction lane must NOT be counted.
+    ok = count == 3
+    print(f"  expected 3 same-direction lanes (self + 2 more), got {count}")
+    print(f"  {'✓' if ok else '✗'} PASSED")
+    assert ok
+
+
 # ── Test 8: remaining_distance decreases monotonically along the route ────────
 
 def test_remaining_distance_monotonic():
@@ -262,6 +312,7 @@ def main():
     test_tolerates_single_outlier_waypoint()
     test_target_waypoint_lookahead_zero()
     test_target_waypoint_clamps_at_end()
+    test_count_same_direction_lanes()
     test_remaining_distance_monotonic()
     test_precompute_remaining_distances_matches()
 

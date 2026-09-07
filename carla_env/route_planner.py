@@ -254,6 +254,58 @@ class RoutePlanner:
         return route[target_index]
 
     @staticmethod
+    def count_same_direction_lanes(waypoint, max_lanes_each_side: int = 4) -> int:
+        """
+        Count Driving lanes going the same direction as `waypoint`'s lane,
+        including itself.
+
+        Why: a car drifting into an adjacent same-direction lane on a
+        multi-lane one-way road hasn't left the road — it's just in a
+        different lane of the same one — but the off-road termination
+        threshold was sized for a single lane, treating that drift as a
+        road-departure failure. Confirmed via live testing: this is
+        disproportionately likely right at intersections, where dedicated
+        turn lanes commonly add extra same-direction lanes. env.py widens
+        the termination threshold by this count (not the centering
+        reward, which should still gently encourage staying in the
+        route's own lane).
+
+        Uses CARLA's lane_id sign convention: lanes on the same side of a
+        road's centerline (same direction) share the sign of lane_id;
+        get_left_lane()/get_right_lane() cross to the opposite-direction
+        side once you pass the centerline, which the sign check below
+        detects and stops at. max_lanes_each_side bounds the walk
+        defensively (CARLA never has this many real lanes) rather than
+        relying on it always terminating naturally.
+        """
+        import carla
+
+        def is_same_direction(wp) -> bool:
+            return (
+                wp is not None
+                and wp.lane_type == carla.LaneType.Driving
+                and (wp.lane_id > 0) == (waypoint.lane_id > 0)
+            )
+
+        count = 1
+
+        wp = waypoint.get_left_lane()
+        steps = 0
+        while is_same_direction(wp) and steps < max_lanes_each_side:
+            count += 1
+            wp = wp.get_left_lane()
+            steps += 1
+
+        wp = waypoint.get_right_lane()
+        steps = 0
+        while is_same_direction(wp) and steps < max_lanes_each_side:
+            count += 1
+            wp = wp.get_right_lane()
+            steps += 1
+
+        return count
+
+    @staticmethod
     def remaining_distance(
         route: List[RouteWaypoint],
         current_index: int,

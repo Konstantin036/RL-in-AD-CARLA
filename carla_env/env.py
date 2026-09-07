@@ -828,12 +828,25 @@ class CarlaLaneKeepingEnv(gym.Env):
             traffic_light, obs_data.speed_kmh
         )
 
+        # Widen the off-road threshold on multi-lane one-way roads — a car
+        # drifting into an adjacent same-direction lane hasn't left the
+        # road, it just isn't in the route's specific lane anymore. The
+        # centering reward (compute_reward(), below) is unaffected and
+        # still uses the base max_lateral_m, so the agent is still gently
+        # encouraged to stay in its own lane — only the hard termination
+        # is relaxed. See RoutePlanner.count_same_direction_lanes()'s
+        # docstring for why (confirmed via live testing).
+        same_direction_lanes = self._route_planner.count_same_direction_lanes(
+            target_waypoint.waypoint
+        )
+        effective_max_lateral_m = self.reward_config.max_lateral_m * same_direction_lanes
+
         terminated, truncated, term_reason = check_termination(
             obs_data             = obs_data,
             collision_flag       = collision_flag,
             step_count           = self._step_count,
             max_steps            = self.max_steps,
-            max_lateral_m        = self.reward_config.max_lateral_m,
+            max_lateral_m        = effective_max_lateral_m,
             stall_flag           = stall_flag,
             red_light_violation  = red_light_violation,
             destination_reached  = destination_reached,
@@ -874,6 +887,8 @@ class CarlaLaneKeepingEnv(gym.Env):
             "steering":         obs_data.steering,
             "traffic_light_state":     obs_data.traffic_light_state,
             "traffic_light_must_stop": obs_data.traffic_light_must_stop,
+            "same_direction_lanes":    same_direction_lanes,
+            "effective_max_lateral_m": effective_max_lateral_m,
             # Reward breakdown
             "reward_total":      reward_info.total,
             "reward_centering":  reward_info.r_centering,
