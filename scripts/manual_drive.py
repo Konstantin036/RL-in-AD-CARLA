@@ -289,7 +289,7 @@ def run_manual_drive(map_name: str = "Town10HD_Opt"):
                     step       = 0
                     episode   += 1
                     obs_data    = ObservationData(0.0, 0.0, 0.0, 0.0)
-                    reward_info = RewardInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False)
+                    reward_info = RewardInfo(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False)
                     print(f"[INFO] Manual reset → Episode {episode}")
 
         # ── Read keyboard state ────────────────────────────────────────────────
@@ -353,6 +353,10 @@ def run_manual_drive(map_name: str = "Town10HD_Opt"):
                       f"(step {step}). Press R to start next episode.")
 
         # ── Render HUD ─────────────────────────────────────────────────────────
+        # info always has route_index/route_length/remaining_distance (set by
+        # both reset() and step()); destination_reached/red_light_violation
+        # are step()-only fields, so .get() them with a safe default for the
+        # very first frame (right after reset(), before any step() has run).
         hud.render(
             obs_data    = obs_data,
             reward_info = reward_info,
@@ -364,6 +368,11 @@ def run_manual_drive(map_name: str = "Town10HD_Opt"):
             terminated  = terminated,
             truncated   = truncated,
             term_reason = term_reason,
+            route_index          = info["route_index"],
+            route_length         = info["route_length"],
+            remaining_distance   = info["remaining_distance"],
+            destination_reached  = info.get("destination_reached", False),
+            red_light_violation  = info.get("red_light_violation", False),
         )
 
         clock.tick(FPS_TARGET)

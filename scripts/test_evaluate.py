@@ -30,12 +30,12 @@ def sep(title=""):
 # ── Test 1: compute_summary() on a known set of episodes ──────────────────────
 
 def test_compute_summary_basic():
-    sep("compute_summary() — mixed timeout/collision episodes")
+    sep("compute_summary() — mixed destination_reached/timeout/collision episodes")
     results = [
         EpisodeResult(episode_num=1, reward=100.0, length=1000,
-                      mean_lateral_distance=0.10, termination_reason="timeout"),
+                      mean_lateral_distance=0.10, termination_reason="destination_reached"),
         EpisodeResult(episode_num=2, reward=80.0, length=1000,
-                      mean_lateral_distance=0.20, termination_reason="timeout"),
+                      mean_lateral_distance=0.20, termination_reason="destination_reached"),
         EpisodeResult(episode_num=3, reward=20.0, length=400,
                       mean_lateral_distance=0.50, termination_reason="collision"),
         EpisodeResult(episode_num=4, reward=90.0, length=1000,
@@ -49,9 +49,14 @@ def test_compute_summary_basic():
     assert abs(summary.std_reward - expected_std) < 1e-6
     expected_mean_lat = (0.10 + 0.20 + 0.50 + 0.15) / 4
     assert abs(summary.mean_lateral_distance - expected_mean_lat) < 1e-9
-    assert summary.success_rate == 0.75            # 3 of 4 are "timeout"
+    # 2 of 4 reached the destination — NOT 3 of 4: timeout must not count as
+    # success (that was the bug: it used to count "ran out of time without
+    # crashing" the same as "actually finished the route").
+    assert summary.success_rate == 0.5
     assert summary.mean_length == 850.0            # (1000+1000+400+1000)/4
-    assert summary.termination_counts == {"timeout": 3, "collision": 1}
+    assert summary.termination_counts == {
+        "destination_reached": 2, "collision": 1, "timeout": 1,
+    }
     print("  summary:", summary)
     print("  ✓ PASSED")
 
@@ -62,14 +67,32 @@ def test_compute_summary_all_success():
     sep("compute_summary() — all episodes successful")
     results = [
         EpisodeResult(episode_num=1, reward=50.0, length=1000,
+                      mean_lateral_distance=0.05, termination_reason="destination_reached"),
+        EpisodeResult(episode_num=2, reward=50.0, length=1000,
+                      mean_lateral_distance=0.05, termination_reason="destination_reached"),
+    ]
+    summary = compute_summary(results)
+
+    assert summary.success_rate == 1.0
+    assert summary.std_reward == 0.0
+    assert summary.termination_counts == {"destination_reached": 2}
+    print("  summary:", summary)
+    print("  ✓ PASSED")
+
+
+# ── Test 2b: timeout alone is never counted as success ─────────────────────────
+
+def test_compute_summary_timeout_is_not_success():
+    sep("compute_summary() — timeout alone gives success_rate 0.0")
+    results = [
+        EpisodeResult(episode_num=1, reward=50.0, length=1000,
                       mean_lateral_distance=0.05, termination_reason="timeout"),
         EpisodeResult(episode_num=2, reward=50.0, length=1000,
                       mean_lateral_distance=0.05, termination_reason="timeout"),
     ]
     summary = compute_summary(results)
 
-    assert summary.success_rate == 1.0
-    assert summary.std_reward == 0.0
+    assert summary.success_rate == 0.0
     assert summary.termination_counts == {"timeout": 2}
     print("  summary:", summary)
     print("  ✓ PASSED")
@@ -176,6 +199,7 @@ def main():
 
     test_compute_summary_basic()
     test_compute_summary_all_success()
+    test_compute_summary_timeout_is_not_success()
     test_compute_summary_all_failure_reasons()
     test_load_model_unknown_algo()
     test_write_csv()

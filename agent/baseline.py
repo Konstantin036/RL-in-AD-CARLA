@@ -22,12 +22,20 @@ Why this is useful beyond the demo:
 
 import os
 import sys
+import logging
 import numpy as np
 
 # ── Path setup ─────────────────────────────────────────────────────────────────
 # Add project root to path so all carla_env imports work, same as
 # agent/train.py and agent/evaluate.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# logger, not print() — rule 8 in CLAUDE.md ("Use logger (not print) inside
+# carla_env/ and agent/"). Configured at module level (not inside
+# run_baseline_demo()) so importing this module doesn't silently impose a
+# logging config on whatever calls it — same pattern as agent/evaluate.py.
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
 
 # ── Controller gains ────────────────────────────────────────────────────────
@@ -83,9 +91,6 @@ def run_baseline_demo(
     without a trained model — watch the CARLA spectator window (it
     auto-follows the vehicle) while this prints what the code sees.
     """
-    import logging
-    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
-
     from carla_env.env import CarlaLaneKeepingEnv
 
     env = None
@@ -94,11 +99,11 @@ def run_baseline_demo(
             host=host, port=port, map_name=map_name,
             max_steps=max_steps_per_episode, verbose=False,
         )
-        print(f"[SETUP] Environment created on map={map_name}")
+        logger.info(f"Environment created on map={map_name}")
 
         for episode in range(1, num_episodes + 1):
             obs, info = env.reset()
-            print(
+            logger.info(
                 f"\n{'-'*60}\n"
                 f"  Episode {episode}/{num_episodes} — "
                 f"route: {info['route_length']} waypoints\n"
@@ -114,7 +119,7 @@ def run_baseline_demo(
 
                 noteworthy = info.get("red_light_violation") or info.get("destination_reached")
                 if step % 20 == 0 or noteworthy:
-                    print(
+                    logger.info(
                         f"  step={step:4d}  lat={info['lateral_distance']:+.2f}m  "
                         f"spd={info['speed_kmh']:5.1f}km/h  "
                         f"route={info['route_index']}/{info['route_length']}  "
@@ -125,22 +130,22 @@ def run_baseline_demo(
                     )
 
                 if info.get("red_light_violation"):
-                    print(f"  >>> RED LIGHT VIOLATION at step {step}")
+                    logger.info(f"  >>> RED LIGHT VIOLATION at step {step}")
 
                 if terminated or truncated:
                     reason = info.get("termination_reason", "unknown")
                     end_type = "TERMINATED" if terminated else "TRUNCATED"
-                    print(f"\n  [{end_type}] after {step+1} steps — {reason}")
+                    logger.info(f"\n  [{end_type}] after {step+1} steps — {reason}")
                     break
 
-            print(f"  Episode {episode} total reward: {total_reward:+.2f}")
+            logger.info(f"  Episode {episode} total reward: {total_reward:+.2f}")
 
     except KeyboardInterrupt:
-        print("\n[INFO] Interrupted by user.")
+        logger.info("Interrupted by user.")
     finally:
         if env is not None:
             env.close()
-            print("[INFO] Environment closed.")
+            logger.info("Environment closed.")
 
 
 if __name__ == "__main__":

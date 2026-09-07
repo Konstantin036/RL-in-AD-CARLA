@@ -146,10 +146,50 @@ def test_respects_order_when_route_loops_near_itself():
     assert ok
 
 
-# ── Test 4: get_target_waypoint with lookahead=0 returns the closest point ─────
+# ── Test 4: recovers from the vehicle drifting slightly behind start_index ─────
+
+def test_recovers_from_backward_drift():
+    sep("4. A vehicle that drifts slightly behind its last tracked index "
+        "is still found (e.g. rolling back on an incline while stopped)")
+    planner = make_planner()
+    route = make_straight_route(length_m=20.0, spacing_m=1.0)
+
+    # Tracking was at index 10 last step; the vehicle has since rolled
+    # back 2m (e.g. gravity while stopped at a red light on a slope).
+    index = planner.get_closest_waypoint_index(
+        route, FakeLocation(8.0, 0.0), start_index=10
+    )
+    ok = index == 8
+    print(f"  vehicle rolled back to x=8.0, start_index=10: got index={index}")
+    print(f"  {'✓' if ok else '✗'} PASSED")
+    assert ok
+
+
+# ── Test 5: a single outlier waypoint doesn't halt the search prematurely ──────
+
+def test_tolerates_single_outlier_waypoint():
+    sep("5. A single irregular waypoint doesn't halt the search one step early")
+    planner = make_planner()
+    route = make_straight_route(length_m=20.0, spacing_m=1.0)
+
+    # Index 3 is a wild outlier (e.g. a glitchy point from GlobalRoutePlanner
+    # at a junction) — a purely greedy "stop at the first non-improving step"
+    # search would halt at index 2 and never reach the real closest point.
+    route[3] = RouteWaypoint(waypoint=FakeWaypoint(100.0, 0.0))
+
+    index = planner.get_closest_waypoint_index(
+        route, FakeLocation(9.0, 0.0), start_index=2
+    )
+    ok = index == 9
+    print(f"  outlier at index 3, vehicle actually at x=9.0: got index={index}")
+    print(f"  {'✓' if ok else '✗'} PASSED")
+    assert ok
+
+
+# ── Test 6: get_target_waypoint with lookahead=0 returns the closest point ─────
 
 def test_target_waypoint_lookahead_zero():
-    sep("4. get_target_waypoint(lookahead=0) returns the closest waypoint itself")
+    sep("6. get_target_waypoint(lookahead=0) returns the closest waypoint itself")
     planner = make_planner()
     route = make_straight_route()
 
@@ -160,10 +200,10 @@ def test_target_waypoint_lookahead_zero():
     assert ok
 
 
-# ── Test 5: get_target_waypoint clamps lookahead at the route's end ───────────
+# ── Test 7: get_target_waypoint clamps lookahead at the route's end ───────────
 
 def test_target_waypoint_clamps_at_end():
-    sep("5. get_target_waypoint clamps lookahead at the end of a short route")
+    sep("7. get_target_waypoint clamps lookahead at the end of a short route")
     planner = make_planner()
     route = make_straight_route(length_m=8.0)   # 5 waypoints
 
@@ -174,10 +214,10 @@ def test_target_waypoint_clamps_at_end():
     assert ok
 
 
-# ── Test 6: remaining_distance decreases monotonically along the route ────────
+# ── Test 8: remaining_distance decreases monotonically along the route ────────
 
 def test_remaining_distance_monotonic():
-    sep("6. remaining_distance decreases as current_index advances")
+    sep("8. remaining_distance decreases as current_index advances")
     planner = make_planner()
     route = make_straight_route(length_m=50.0)
 
@@ -191,6 +231,24 @@ def test_remaining_distance_monotonic():
     assert ok
 
 
+# ── Test 9: precompute_remaining_distances matches remaining_distance() ───────
+
+def test_precompute_remaining_distances_matches():
+    sep("9. precompute_remaining_distances() matches remaining_distance() "
+        "at every index")
+    planner = make_planner()
+    route = make_straight_route(length_m=37.0, spacing_m=2.0)
+
+    precomputed = planner.precompute_remaining_distances(route)
+    ok = all(
+        abs(precomputed[i] - planner.remaining_distance(route, i)) < 1e-9
+        for i in range(len(route))
+    )
+    print(f"  {len(route)} indices checked, all match: {ok}")
+    print(f"  {'✓' if ok else '✗'} PASSED")
+    assert ok
+
+
 def main():
     print("=" * 60)
     print("  RoutePlanner Geometry Unit Tests")
@@ -200,9 +258,12 @@ def main():
     test_closest_index_advances_normally()
     test_ignores_distant_parallel_street()
     test_respects_order_when_route_loops_near_itself()
+    test_recovers_from_backward_drift()
+    test_tolerates_single_outlier_waypoint()
     test_target_waypoint_lookahead_zero()
     test_target_waypoint_clamps_at_end()
     test_remaining_distance_monotonic()
+    test_precompute_remaining_distances_matches()
 
     print(f"\n{'='*60}")
     print("  All route planner tests passed.")

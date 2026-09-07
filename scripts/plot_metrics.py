@@ -140,6 +140,10 @@ def load_training_data(algo):
                 "timestep": int(r["timestep"]),
                 "reward":   float(r[reward_key]),
                 "lateral":  float(r[lateral_key]),
+                # Real per-episode outcome — used by load_training_summary()
+                # instead of fabricating one. Defensive default for any CSV
+                # written before agent/callbacks.py started recording it.
+                "reason":   r.get("termination_reason", "unknown"),
             })
 
     if not all_rows:
@@ -156,6 +160,7 @@ def load_training_data(algo):
         "timesteps": [r["timestep"] for r in deduped],
         "rewards":   [r["reward"]   for r in deduped],
         "laterals":  [r["lateral"]  for r in deduped],
+        "reasons":   [r["reason"]   for r in deduped],
         "n":         len(deduped),
         "path":      "merged ({} runs)".format(len(paths)),
     }
@@ -187,7 +192,10 @@ def load_eval_data(algo):
     laterals = [float(r["mean_lateral_distance"]) for r in best_rows]
     reasons = [r["termination_reason"] for r in best_rows]
     n = len(best_rows)
-    success = sum(1 for r in reasons if r == "timeout") / n
+    # destination_reached, not timeout — see agent/evaluate.py's
+    # compute_summary() for why (confirmed via code review: this used to
+    # count "ran out of time without crashing" as success).
+    success = sum(1 for r in reasons if r == "destination_reached") / n
     counts = {}
     for r in reasons:
         counts[r] = counts.get(r, 0) + 1
@@ -220,19 +228,29 @@ def load_training_summary(algo, window=20):
     start = max(0, n_total - window)
     rewards = merged["rewards"][start:]
     laterals = merged["laterals"][start:]
+    reasons = merged["reasons"][start:]
     n = len(rewards)
     mean_r = sum(rewards) / n
-    success = 1.0   # training episodes that reach this point are all timeouts
+
+    # Real per-episode outcomes, not a fabricated "all timeouts" placeholder
+    # — that used to hardcode success_rate=1.0 unconditionally whenever no
+    # eval CSV existed, reporting 100% success regardless of what actually
+    # happened (confirmed via code review). destination_reached is success,
+    # same definition as agent/evaluate.py's compute_summary().
+    termination_counts = {}
+    for r in reasons:
+        termination_counts[r] = termination_counts.get(r, 0) + 1
+    success = termination_counts.get("destination_reached", 0) / n
 
     return {
         "rewards":   rewards,
         "laterals":  laterals,
-        "reasons":   ["timeout"] * n,
+        "reasons":   reasons,
         "mean_reward":  mean_r,
         "std_reward":   (sum((x - mean_r)**2 for x in rewards) / n) ** 0.5,
         "mean_lateral": sum(laterals) / n,
         "success_rate": success,
-        "termination_counts": {"timeout": n},
+        "termination_counts": termination_counts,
         "n": n,
         "source": "training (last {} eps)".format(n),
         "path": None,
@@ -475,13 +493,24 @@ def plot_termination_breakdown(outdir, window=20):
         print("  [skip] termination_breakdown — no data found")
         return
 
+    # destination_reached is success now, not timeout — timeout just means
+    # the episode ran out of time without crashing OR finishing the route,
+    # a neutral outcome, not the green "success" color it used to get
+    # (confirmed via code review, same root issue as the success_rate fix
+    # in agent/evaluate.py's compute_summary()).
     reason_colors = {
-        "timeout":       "#4CAF50",   # green — success
-        "collision":     "#F44336",   # red
-        "off_road":      "#FF9800",   # orange
-        "wrong_heading": "#9C27B0",   # purple
+        "destination_reached": "#4CAF50",   # green — success
+        "collision":           "#F44336",   # red
+        "off_road":            "#FF9800",   # orange
+        "wrong_heading":       "#9C27B0",   # purple
+        "stall":               "#795548",   # brown
+        "red_light_violation": "#E91E63",   # pink
+        "timeout":             "#9E9E9E",   # gray — neutral, not success
     }
-    reason_order = ["timeout", "collision", "off_road", "wrong_heading"]
+    reason_order = [
+        "destination_reached", "collision", "off_road", "wrong_heading",
+        "stall", "red_light_violation", "timeout",
+    ]
 
     algos = list(stats.keys())
     n = len(algos)
@@ -669,7 +698,12 @@ def plot_radar_chart(outdir, window=20):
             lat_key    = "mean_lateral_dist" if "mean_lateral_dist" in rw[0] else "mean_lateral_distance"
             reward  = sum(float(r[reward_key]) for r in rw) / len(rw)
             lateral = sum(float(r[lat_key])    for r in rw) / len(rw)
-            success = 1.0
+            # Real per-episode outcomes, not a fabricated 100% — see
+            # load_training_summary()'s matching fix for why.
+            success = sum(
+                1 for r in rw
+                if r.get("termination_reason") == "destination_reached"
+            ) / len(rw)
 
         # Speed adherence and smoothness from last `window` training episodes
         speed_adh  = None

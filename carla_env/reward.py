@@ -427,27 +427,38 @@ def check_termination(
     max_heading_deg: float = 90.0,
     stall_flag: bool = False,
     red_light_violation: bool = False,
+    destination_reached: bool = False,
 ) -> tuple:
     """
     Decide whether the current episode should end.
 
     Returns (terminated, truncated, reason) following Gymnasium convention:
-        terminated: True if the agent failed (collision, off-road)
+        terminated: True if the episode ended definitively — either the
+                     agent failed (collision, off-road, ...) or it
+                     succeeded (destination_reached). Callers must check
+                     `reason` to tell which: is_terminal_for_reward in
+                     env.py's step() is `terminated and reason !=
+                     "destination_reached"` specifically so the terminal
+                     failure penalty is never applied to a success.
         truncated:  True if the episode hit the step limit (timeout)
         reason:     string describing why the episode ended (for logging)
 
     Gymnasium distinguishes terminated vs truncated:
-        terminated = agent did something wrong → apply terminal penalty
-        truncated  = ran out of time → no terminal penalty (not agent's fault)
+        terminated = the episode reached a definitive end (pass or fail)
+        truncated  = ran out of time — not a definitive outcome either way
 
-    Termination conditions (agent's fault):
-        1. Collision detected by CARLA collision sensor
-        2. Red/yellow light violation (drove through instead of stopping)
-        3. Lateral distance exceeds max_lateral_m (off road)
-        4. Heading error exceeds max_heading_deg (pointing wrong way)
+    Termination conditions, in priority order (agent's fault, unless noted):
+        1. Stall (stopped too long without a red light justifying it)
+        2. Collision detected by CARLA collision sensor
+        3. Red/yellow light violation (drove through instead of stopping)
+        4. Lateral distance exceeds max_lateral_m (off road)
+        5. Heading error exceeds max_heading_deg (pointing wrong way)
+        6. Destination reached (success — not the agent's fault, checked
+           last among the terminated reasons so any genuine failure on
+           the same step still takes priority over it)
 
     Truncation condition (timeout):
-        5. step_count >= max_steps
+        7. step_count >= max_steps
 
     Args:
         obs_data:            ObservationData from current step
@@ -457,6 +468,7 @@ def check_termination(
         max_lateral_m:       lateral distance threshold for off-road
         max_heading_deg:     heading error threshold in degrees
         red_light_violation: True if RedLightViolationDetector fired this step
+        destination_reached: True if the vehicle reached the route's endpoint
     """
     # ── Stall ──────────────────────────────────────────────────────────────────
     if stall_flag:
@@ -478,6 +490,12 @@ def check_termination(
     max_heading_rad = math.radians(max_heading_deg)
     if abs(obs_data.heading_error_rad) >= max_heading_rad:
         return True, False, "wrong_heading"
+
+    # ── Destination reached ───────────────────────────────────────────────────
+    # Checked last among the terminated reasons: a genuine failure on the
+    # same step (e.g. a collision right at the endpoint) still wins.
+    if destination_reached:
+        return True, False, "destination_reached"
 
     # ── Timeout ────────────────────────────────────────────────────────────────
     if step_count >= max_steps:

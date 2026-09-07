@@ -91,6 +91,10 @@ DESTINATION_REACHED_M = 5.0
 SPAWN_HEIGHT_OFFSET_M = 0.5   # lift above a route waypoint's raw road-surface
                               # z when spawning there, to avoid a ground-
                               # clipping spawn collision (see reset())
+MAX_RESET_ATTEMPTS    = 5     # retries for "route came back empty" / "route[0]
+                              # stayed occupied" before reset() gives up — see
+                              # reset()'s route+spawn loop for why either can
+                              # happen even though both are rare
 
 # Route line visualization: redrawn periodically with a short life_time
 # rather than once per episode with a life_time covering the whole
@@ -201,6 +205,10 @@ class CarlaLaneKeepingEnv(gym.Env):
                     agent/train.py's eval_env) avoid contending for the
                     identical spawn point as this one (default 0)
     verbose       : if True, log step-level info (slow — use for debugging)
+    render_debug  : if True (default), draw the planned route and current
+                    target waypoint in the CARLA world every episode/step
+                    — purely visual, no effect on training. Pass False for
+                    unattended training runs to skip the RPC overhead.
 
     Example usage:
         env = CarlaLaneKeepingEnv()
@@ -228,6 +236,7 @@ class CarlaLaneKeepingEnv(gym.Env):
         spawn_index: int     = None,
         spawn_index_offset: int = 0,
         verbose: bool       = False,
+        render_debug: bool  = True,
     ):
         super().__init__()
 
@@ -240,6 +249,14 @@ class CarlaLaneKeepingEnv(gym.Env):
         self.spawn_index        = spawn_index
         self.spawn_index_offset = spawn_index_offset
         self.verbose       = verbose
+        self._render_debug = render_debug   # gates the route-line/target-waypoint
+                                             # CARLA debug-draw calls — real cost
+                                             # (tens of thousands of RPC calls
+                                             # over a full training run) with no
+                                             # benefit when nobody's watching the
+                                             # CARLA window. Off by default for
+                                             # agent/train.py; on by default
+                                             # elsewhere (demos, manual driving).
 
         # ── Gymnasium spaces ───────────────────────────────────────────────────
         self.observation_space = get_observation_space()
@@ -272,10 +289,13 @@ class CarlaLaneKeepingEnv(gym.Env):
         # ── Random number generator for spawn point selection ──────────────────
         self._rng = random.Random(seed)
 
-        # ── Route planning ───────────────────────────────────────────────────── 
+        # ── Route planning ─────────────────────────────────────────────────────
         self._route_planner = None
         self._route = []
         self._route_index = 0
+        self._route_remaining = []   # precompute_remaining_distances(self._route);
+                                      # O(1) per-step lookup instead of recomputing
+                                      # remaining_distance() from scratch every step
 
         # ── Connect to CARLA once at init ──────────────────────────────────────
         # We connect here rather than in reset() so connection errors are
@@ -383,13 +403,45 @@ class CarlaLaneKeepingEnv(gym.Env):
         instead of the route's real start produces an instant, spurious
         lateral-distance blowup the moment the episode begins (confirmed
         via live testing — occurred in ~1 in 10 episodes on Town10).
+
+        Returns (transform, index) — the index is exposed so reset() can
+        exclude it from the destination draw (see _choose_destination_index):
+        without that exclusion, start == destination is possible, and
+        plan_route() returns an empty route for that pair, which used to
+        crash the next step() call with no guard against it (confirmed
+        via code review).
         """
         if self.spawn_index is not None:
             effective_index = _compute_effective_spawn_index(
                 self.spawn_index, self.spawn_index_offset, len(self._spawn_points)
             )
-            return self._spawn_points[effective_index]
-        return self._rng.choice(self._spawn_points)
+            return self._spawn_points[effective_index], effective_index
+        index = self._rng.randrange(len(self._spawn_points))
+        return self._spawn_points[index], index
+
+    def _choose_destination_index(self, exclude_index: int) -> int:
+        """
+        Pick a destination spawn-point index different from exclude_index.
+
+        start == destination makes plan_route() return an empty route,
+        which previously crashed the next step() call (see
+        _choose_spawn_transform()'s docstring) — excluding it here fixes
+        the problem at its source instead of only handling the empty
+        route downstream.
+        """
+        n = len(self._spawn_points)
+        if self.spawn_index is not None:
+            # Deterministic: same offset every episode, for reproducibility.
+            # Only collides with exclude_index if n <= 20, which no CARLA
+            # map this project uses has anywhere close to.
+            destination_index = (exclude_index + 20) % n
+        else:
+            destination_index = self._rng.randrange(n)
+
+        if destination_index == exclude_index:
+            destination_index = (destination_index + 1) % n
+
+        return destination_index
 
     def _spawn_vehicle_at(self, transform):
         """
@@ -456,6 +508,34 @@ class CarlaLaneKeepingEnv(gym.Env):
         )
         self._world.get_spectator().set_transform(cam_transform)
 
+    def _update_target_waypoint(self):
+        """
+        Look up the route waypoint the observation should be measured
+        against, and (if render_debug is on) draw a marker at it.
+
+        Shared by reset() and step() so the lookahead reasoning and the
+        draw call only have to be right in one place — they used to be
+        duplicated at both call sites and could silently drift apart.
+
+        lookahead=0 (the closest route waypoint, not one further ahead)
+        specifically: lateral_distance/heading_error are measured against
+        this point, so it needs to reflect where the car actually is
+        right now — a point further down the route can already be
+        mid-curve, producing a large apparent lateral_distance that has
+        nothing to do with real lane position (confirmed via live
+        testing: caused spurious off-road terminations on routes with an
+        early turn, or a short route where a nonzero lookahead overshot
+        almost to the destination).
+        """
+        target_waypoint = self._route_planner.get_target_waypoint(
+            self._route, self._route_index, lookahead=0
+        )
+        if self._render_debug:
+            self._route_planner.draw_target_waypoint(
+                self._world, target_waypoint, life_time=DELTA_SECONDS * 2
+            )
+        return target_waypoint
+
     def _destination_reached(self) -> bool:
         """Return True when the vehicle is close enough to the route destination."""
         if not self._route:
@@ -502,79 +582,105 @@ class CarlaLaneKeepingEnv(gym.Env):
         # ── Tick once to let destructions propagate ────────────────────────────
         self._world.tick()
 
-        # ── Plan the route before spawning ──────────────────────────────────────
+        # ── Plan the route, then spawn on it ──────────────────────────────────────
         # Route planning only needs a location, not a live actor — and the
-        # vehicle should ultimately spawn on the route's own first waypoint
-        # (see below), so the route has to exist first.
-        candidate_transform = self._choose_spawn_transform()
-        start_location = candidate_transform.location
+        # vehicle should spawn on the route's own first waypoint (not the
+        # candidate directly — trace_route() snaps its start to the nearest
+        # topology node, usually the candidate but not always), so the route
+        # has to exist first. Retries handle two rare failure modes rather
+        # than crashing the whole training run on either (both confirmed via
+        # code review, not yet observed live):
+        #   - plan_route() returns an empty route (e.g. an unreachable pair)
+        #     — get_closest_waypoint_index() in step() has no route to search
+        #     and would raise on the very next step() call.
+        #   - route[0] stays occupied through all of _spawn_vehicle_at()'s
+        #     retries (e.g. the simultaneously-running eval_env's vehicle is
+        #     sitting right there) — in random mode this should try a
+        #     different spawn point instead of giving up outright.
+        # In fixed spawn_index mode neither is retried with different points:
+        # that would silently break the "always the same start" guarantee
+        # spawn_index exists to provide, so a real failure there raises
+        # immediately instead.
+        import carla
 
-        # Choose a destination different from the spawn point.
-        if self.spawn_index is not None:
-            effective_spawn_index = _compute_effective_spawn_index(
-                self.spawn_index,
-                self.spawn_index_offset,
-                len(self._spawn_points),
+        self._vehicle = None
+        route = []
+
+        for attempt in range(MAX_RESET_ATTEMPTS):
+            candidate_transform, candidate_index = self._choose_spawn_transform()
+            start_location = candidate_transform.location
+
+            destination_index = self._choose_destination_index(candidate_index)
+            destination_location = self._spawn_points[destination_index].location
+
+            route = self._route_planner.plan_route(start_location, destination_location)
+
+            if not route:
+                if self.spawn_index is not None:
+                    raise RuntimeError(
+                        f"plan_route() returned an empty route for fixed "
+                        f"spawn_index={self.spawn_index} -> destination_index="
+                        f"{destination_index}. This spawn point can't reach its "
+                        f"configured destination — choose a different spawn_index."
+                    )
+                logger.debug(
+                    f"plan_route() returned an empty route (attempt "
+                    f"{attempt + 1}/{MAX_RESET_ATTEMPTS}); retrying with a new "
+                    f"destination."
+                )
+                continue
+
+            logger.info(
+                f"Route generated: {len(route)} waypoints, "
+                f"destination=({destination_location.x:.1f}, "
+                f"{destination_location.y:.1f})"
             )
 
-            destination_index = (
-                effective_spawn_index + 20
-            ) % len(self._spawn_points)
-        else:
-            destination_index = self._rng.randrange(len(self._spawn_points))
-
-        destination_transform = self._spawn_points[destination_index]
-        destination_location = destination_transform.location
-
-        self._route = self._route_planner.plan_route(
-            start_location,
-            destination_location,
-        )
-
-        self._route_index = 0
-
-        logger.info(
-            f"Route generated: {len(self._route)} waypoints, "
-            f"destination=({destination_location.x:.1f}, "
-            f"{destination_location.y:.1f})"
-        )
-
-        # ── Spawn the vehicle exactly on the route's first waypoint ─────────────
-        # Not at candidate_transform directly — trace_route() snaps its start
-        # to the nearest topology node, which usually matches the candidate
-        # but not always. Spawning at route[0] instead guarantees the vehicle
-        # starts exactly where the route begins (position AND heading),
-        # eliminating that mismatch by construction rather than in the
-        # common case only. Falls back to the candidate if plan_route()
-        # somehow returned an empty route (e.g. start == destination).
-        #
-        # Route waypoints sit exactly at road-surface height, unlike
-        # carla_map.get_spawn_points()'s entries, which carry a small
-        # built-in vertical offset specifically to avoid a ground-clipping
-        # spawn collision. Spawning at the waypoint's raw z reliably failed
-        # all 5 retry attempts in live testing ("stayed occupied" — not
-        # real occupation, since nothing else exists in this world) — so
-        # lift it the same way _compute_spectator_transform and
-        # RoutePlanner.draw_route already lift waypoint locations for
-        # their own purposes.
-        import carla
-        if self._route:
-            wp_transform = self._route[0].waypoint.transform
+            # Route waypoints sit exactly at road-surface height, unlike
+            # carla_map.get_spawn_points()'s entries, which carry a small
+            # built-in vertical offset specifically to avoid a ground-clipping
+            # spawn collision. Spawning at the waypoint's raw z reliably
+            # failed all 5 retry attempts in live testing ("stayed occupied"
+            # — not real occupation, since nothing else exists in this
+            # world) — so lift it the same way RoutePlanner's draw methods
+            # already lift waypoint locations for their own purposes.
+            wp_transform = route[0].waypoint.transform
             spawn_transform = carla.Transform(
                 wp_transform.location + carla.Location(z=SPAWN_HEIGHT_OFFSET_M),
                 wp_transform.rotation,
             )
+
+            try:
+                self._vehicle = self._spawn_vehicle_at(spawn_transform)
+            except RuntimeError:
+                if self.spawn_index is not None:
+                    raise
+                logger.debug(
+                    f"route[0] stayed occupied (attempt "
+                    f"{attempt + 1}/{MAX_RESET_ATTEMPTS}); retrying with a new "
+                    f"spawn point."
+                )
+                continue
+
+            break
         else:
-            spawn_transform = candidate_transform
-        self._vehicle = self._spawn_vehicle_at(spawn_transform)
+            raise RuntimeError(
+                f"Failed to find a valid route + spawn point after "
+                f"{MAX_RESET_ATTEMPTS} attempts."
+            )
+
+        self._route = route
+        self._route_index = 0
+        self._route_remaining = self._route_planner.precompute_remaining_distances(route)
 
         # ── Draw the route in the CARLA world ───────────────────────────────────
         # Visualization aid only — CARLA's debug draw has no effect on
         # training. Short life_time, redrawn periodically in step() — see
         # ROUTE_DRAW_LIFETIME_S's comment for why not a single long-lived draw.
-        self._route_planner.draw_route(
-            self._world, self._route, life_time=ROUTE_DRAW_LIFETIME_S
-        )
+        if self._render_debug:
+            self._route_planner.draw_route(
+                self._world, self._route, life_time=ROUTE_DRAW_LIFETIME_S
+            )
 
         # ── Move spectator camera to follow the vehicle ────────────────────────
         # Visualization aid only — CARLA's spectator never moves on its own.
@@ -615,20 +721,7 @@ class CarlaLaneKeepingEnv(gym.Env):
         self._previous_raw_action = np.zeros(2, dtype=np.float32)
 
         # ── Compute initial observation ────────────────────────────────────────
-        # lookahead=0: the closest route waypoint, not one further ahead.
-        # lateral_distance/heading_error are measured against this point, so
-        # it needs to reflect where the car actually is right now — a point
-        # further down the route can already be mid-curve, producing a large
-        # apparent lateral_distance that has nothing to do with real lane
-        # position (confirmed via live testing: caused spurious off-road
-        # terminations on routes with an early turn or a short route where
-        # lookahead overshot almost to the destination).
-        target_waypoint = self._route_planner.get_target_waypoint(
-            self._route, self._route_index, lookahead=0
-        )
-        self._route_planner.draw_target_waypoint(
-            self._world, target_waypoint, life_time=DELTA_SECONDS * 2
-        )
+        target_waypoint = self._update_target_waypoint()
 
         traffic_light = get_traffic_light_affordance(self._vehicle)
 
@@ -648,10 +741,7 @@ class CarlaLaneKeepingEnv(gym.Env):
             "traffic_light_must_stop": obs_data.traffic_light_must_stop,
             "route_index": self._route_index,
             "route_length": len(self._route),
-            "remaining_distance": self._route_planner.remaining_distance(
-                self._route,
-                self._route_index,
-            ),
+            "remaining_distance": self._route_remaining[self._route_index],
         }
 
         return obs_array, info
@@ -689,10 +779,13 @@ class CarlaLaneKeepingEnv(gym.Env):
         # ── Move spectator camera to follow the moving vehicle ─────────────────
         # Visualization aid only — see _snap_spectator_to_vehicle()'s docstring
         # for why step() (unlike reset()) can safely use get_transform() directly.
-        self._snap_spectator_to_vehicle(self._vehicle.get_transform())
+        # Fetched once and reused below (current_location) rather than
+        # querying the vehicle's transform twice via separate CARLA calls.
+        vehicle_transform = self._vehicle.get_transform()
+        self._snap_spectator_to_vehicle(vehicle_transform)
 
         # ── Update route tracking ──────────────────────────────────────────────
-        current_location = self._vehicle.get_transform().location
+        current_location = vehicle_transform.location
 
         self._route_index = self._route_planner.get_closest_waypoint_index(
             self._route,
@@ -700,21 +793,13 @@ class CarlaLaneKeepingEnv(gym.Env):
             start_index=self._route_index,
         )
 
-        # lookahead=0 — see the matching comment in reset() for why.
-        target_waypoint = self._route_planner.get_target_waypoint(
-            self._route,
-            self._route_index,
-            lookahead=0,
-        )
-        self._route_planner.draw_target_waypoint(
-            self._world, target_waypoint, life_time=DELTA_SECONDS * 2
-        )
+        target_waypoint = self._update_target_waypoint()
 
         # ── Periodically refresh the route line ─────────────────────────────────
         # See ROUTE_DRAW_LIFETIME_S's comment in the constants section for why
         # this is a periodic short-lived redraw rather than a single
         # episode-long one.
-        if self._step_count % ROUTE_REDRAW_INTERVAL_STEPS == 0:
+        if self._render_debug and self._step_count % ROUTE_REDRAW_INTERVAL_STEPS == 0:
             self._route_planner.draw_route(
                 self._world, self._route, life_time=ROUTE_DRAW_LIFETIME_S
             )
@@ -751,17 +836,14 @@ class CarlaLaneKeepingEnv(gym.Env):
             max_lateral_m        = self.reward_config.max_lateral_m,
             stall_flag           = stall_flag,
             red_light_violation  = red_light_violation,
+            destination_reached  = destination_reached,
         )
 
-        # Reaching the destination is a successful termination.
-        if destination_reached and not terminated:
-            terminated = True
-            truncated = False
-            term_reason = "destination_reached"
-
-
-        # Terminal penalty only on agent failure, not on timeout
-        is_terminal_for_reward = terminated   # not truncated
+        # Terminal penalty only on agent failure — not on timeout, and not
+        # on a successful destination_reached (it's `terminated` too, since
+        # the episode still ends definitively, but it must not get the same
+        # penalty as a collision).
+        is_terminal_for_reward = terminated and term_reason != "destination_reached"
 
         # ── Compute action delta for the smoothness reward ─────────────────────
         action_array = np.asarray(action, dtype=np.float32)
@@ -808,10 +890,7 @@ class CarlaLaneKeepingEnv(gym.Env):
             "route_index": self._route_index,
             "route_length": len(self._route),
             "destination_reached": destination_reached,
-            "remaining_distance": self._route_planner.remaining_distance(
-                self._route,
-                self._route_index,
-            ),
+            "remaining_distance": self._route_remaining[self._route_index],
         }
 
         if self.verbose:
@@ -835,19 +914,26 @@ class CarlaLaneKeepingEnv(gym.Env):
         CARLA.
         """
         logger.info("Closing environment ...")
-        self._destroy_actors()
-        self._disable_sync_mode()
+        try:
+            self._destroy_actors()
+        finally:
+            # Must run even if _destroy_actors() raised (e.g. an actor is
+            # already gone/stale on the server) — leaving sync mode on
+            # crashes CARLA, exactly the failure this method exists to
+            # prevent, per rule 5 in CLAUDE.md ("Always use try/finally
+            # for CARLA cleanup").
+            self._disable_sync_mode()
 
-        # Tick once after restoring async mode so CARLA acknowledges it
-        if self._world is not None:
-            try:
-                self._world.tick()
-            except Exception:
-                pass   # world may already be gone if CARLA was closed
+            # Tick once after restoring async mode so CARLA acknowledges it
+            if self._world is not None:
+                try:
+                    self._world.tick()
+                except Exception:
+                    pass   # world may already be gone if CARLA was closed
 
-        self._client = None
-        self._world  = None
-        logger.info("Environment closed.")
+            self._client = None
+            self._world  = None
+            logger.info("Environment closed.")
 
     # ── Properties for external access ────────────────────────────────────────
 

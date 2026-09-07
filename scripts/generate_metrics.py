@@ -137,7 +137,7 @@ def compute_eval_stats(rows):
         "mean_lateral_m":     sum(laterals) / n,
         "max_lateral_m":      max(laterals),
         "mean_length":        sum(lengths) / n,
-        "success_rate":       sum(1 for r in reasons if r == "timeout") / n,
+        "success_rate":       sum(1 for r in reasons if r == "destination_reached") / n,
         "termination_counts": counts,
         "mean_speed_kmh":     None,
         "mean_smoothness":    None,
@@ -182,7 +182,7 @@ def compute_training_stats(rows):
         "mean_lateral_m":     sum(laterals) / n,
         "max_lateral_m":      max(laterals),
         "mean_length":        sum(lengths) / n,
-        "success_rate":       sum(1 for r in reasons if r == "timeout") / n,
+        "success_rate":       sum(1 for r in reasons if r == "destination_reached") / n,
         "termination_counts": counts,
         "mean_speed_kmh":     sum(speeds) / n if speeds else None,
         "std_speed_kmh":      (sum((s - sum(speeds)/n)**2 for s in speeds)/n)**0.5 if speeds else None,
@@ -479,7 +479,8 @@ def write_summary_csv(entries, path):
         "mean_smoothness",
         "success_rate_pct", "mean_episode_length",
         "sample_eff_step",
-        "timeout", "collision", "off_road", "wrong_heading",
+        "destination_reached", "timeout", "collision", "off_road",
+        "wrong_heading", "stall", "red_light_violation",
     ]
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -507,10 +508,13 @@ def write_summary_csv(entries, path):
                 "success_rate_pct":   "{:.2f}".format(s["success_rate"] * 100) if s else "",
                 "mean_episode_length": "{:.1f}".format(s["mean_length"]) if s else "",
                 "sample_eff_step":    entry.get("sample_eff_step", "") or "",
+                "destination_reached": tc.get("destination_reached", 0),
                 "timeout":            tc.get("timeout", 0),
                 "collision":          tc.get("collision", 0),
                 "off_road":           tc.get("off_road", 0),
                 "wrong_heading":      tc.get("wrong_heading", 0),
+                "stall":              tc.get("stall", 0),
+                "red_light_violation": tc.get("red_light_violation", 0),
             })
     print("Summary CSV written to: {}".format(path))
 

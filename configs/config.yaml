@@ -37,6 +37,14 @@ env:
                                  #   (Previously 150, fixed, tuned for a
                                  #   straight Town04 segment — not meaningful
                                  #   on Town10 and moot now.)
+  render_debug:   false         # skip drawing the route line/target-waypoint
+                                 #   marker in the CARLA world during real
+                                 #   training — no benefit when nobody's
+                                 #   watching, real RPC cost over a full run.
+                                 #   Flip to true for scripts/manual_drive.py-
+                                 #   style visual debugging (default anyway
+                                 #   when this key is omitted — see
+                                 #   CarlaLaneKeepingEnv's render_debug param).
 
 # ── Reward function ───────────────────────────────────────────
 reward:

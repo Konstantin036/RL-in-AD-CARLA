@@ -120,6 +120,12 @@ def make_env(cfg: dict, log_dir: str, seed: int = 0, is_eval: bool = False):
         spawn_index        = env_cfg.get("spawn_index"),
         spawn_index_offset = 1 if is_eval else 0,
         verbose            = False,
+        # Route-line/target-waypoint CARLA debug-draw is a visualization
+        # aid nobody's watching during a real training run — tens of
+        # thousands of unnecessary RPC calls over a full run otherwise
+        # (confirmed via code review). Default True (see
+        # CarlaLaneKeepingEnv) keeps it on for demos/manual driving.
+        render_debug       = env_cfg.get("render_debug", True),
     )
 
     # Monitor wrapper: records episode reward/length to CSV

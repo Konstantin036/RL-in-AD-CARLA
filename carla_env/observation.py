@@ -93,7 +93,7 @@ class ObservationData:
 
 # ── Core computation functions ────────────────────────────────────────────────
 
-def get_lateral_distance(vehicle, waypoint) -> float:
+def get_lateral_distance(vehicle, waypoint, vehicle_location=None) -> float:
     """
     Compute the signed lateral distance from the vehicle to the lane center.
 
@@ -111,12 +111,20 @@ def get_lateral_distance(vehicle, waypoint) -> float:
     Args:
         vehicle:  carla.Vehicle actor
         waypoint: carla.Waypoint (nearest to the vehicle)
+        vehicle_location: optional pre-fetched vehicle.get_location() —
+            pass this when the caller already has it (compute_observation()
+            fetches the vehicle's transform once for all four observation
+            helpers rather than each one independently re-querying CARLA;
+            confirmed via code review as real repeated cost at 20Hz over a
+            full training run). None (default) queries it here, unchanged
+            from before — existing callers (e.g. scripts/test_observation.py)
+            need no changes.
 
     Returns:
         float: signed distance in meters
     """
     # Vehicle position
-    veh_loc = vehicle.get_location()
+    veh_loc = vehicle_location if vehicle_location is not None else vehicle.get_location()
 
     # Waypoint position (lane center)
     wp_loc = waypoint.transform.location
@@ -140,7 +148,7 @@ def get_lateral_distance(vehicle, waypoint) -> float:
     return lateral_distance
 
 
-def get_heading_error(vehicle, waypoint) -> float:
+def get_heading_error(vehicle, waypoint, vehicle_yaw_deg=None) -> float:
     """
     Compute the signed heading error between the vehicle and the road.
 
@@ -157,11 +165,19 @@ def get_heading_error(vehicle, waypoint) -> float:
     Args:
         vehicle:  carla.Vehicle actor
         waypoint: carla.Waypoint
+        vehicle_yaw_deg: optional pre-fetched vehicle.get_transform()
+            .rotation.yaw — same reasoning as get_lateral_distance()'s
+            vehicle_location parameter. None (default) queries it here,
+            unchanged from before.
 
     Returns:
         float: heading error in radians, in [-π, π]
     """
-    veh_yaw_rad = math.radians(vehicle.get_transform().rotation.yaw)
+    veh_yaw_deg = (
+        vehicle_yaw_deg if vehicle_yaw_deg is not None
+        else vehicle.get_transform().rotation.yaw
+    )
+    veh_yaw_rad = math.radians(veh_yaw_deg)
     wp_yaw_rad  = math.radians(waypoint.transform.rotation.yaw)
 
     # Raw difference
@@ -276,6 +292,13 @@ def compute_observation(vehicle, carla_map, route_waypoint=None, traffic_light=N
                     used for reward computation and logging
     """
 
+    # Fetched once and reused below (route_waypoint's else-branch,
+    # get_lateral_distance, get_heading_error) instead of each of those
+    # independently re-querying the vehicle's transform via its own CARLA
+    # API call — real repeated cost at 20Hz over a full training run
+    # (confirmed via code review).
+    vehicle_transform = vehicle.get_transform()
+
     if route_waypoint is not None:
         # Follow the planned route rather than "whatever lane is closest" —
         # the only way to disambiguate direction inside a junction.
@@ -285,14 +308,18 @@ def compute_observation(vehicle, carla_map, route_waypoint=None, traffic_light=N
         # project_to_road=True: snap to the nearest point ON the road
         # lane_type=Driving:    ignore sidewalks and shoulders
         waypoint = carla_map.get_waypoint(
-            vehicle.get_location(),
+            vehicle_transform.location,
             project_to_road=True,
             lane_type=carla.LaneType.Driving,  # noqa (carla imported in env.py)
         )
 
     # ── Compute raw values ────────────────────────────────────────────────────
-    lateral_distance = get_lateral_distance(vehicle, waypoint)
-    heading_error    = get_heading_error(vehicle, waypoint)
+    lateral_distance = get_lateral_distance(
+        vehicle, waypoint, vehicle_location=vehicle_transform.location
+    )
+    heading_error = get_heading_error(
+        vehicle, waypoint, vehicle_yaw_deg=vehicle_transform.rotation.yaw
+    )
     speed_kmh        = get_speed_kmh(vehicle)
     steering         = get_steering(vehicle)
 

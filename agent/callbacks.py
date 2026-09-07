@@ -34,8 +34,13 @@ Thesis note:
 import os
 import csv
 import time
+import logging
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
+
+# logger, not print() — rule 8 in CLAUDE.md ("Use logger (not print)
+# inside carla_env/ and agent/").
+logger = logging.getLogger(__name__)
 
 
 # ── Episode logger ─────────────────────────────────────────────────────────────
@@ -107,7 +112,7 @@ class EpisodeLoggerCallback(BaseCallback):
             ])
 
         if self.verbose:
-            print(f"[Logger] CSV log: {self.csv_path}")
+            logger.info(f"CSV log: {self.csv_path}")
 
     def _on_step(self) -> bool:
         """
@@ -176,9 +181,9 @@ class EpisodeLoggerCallback(BaseCallback):
                         round(elapsed, 1),
                     ])
 
-                # ── Print to terminal ──────────────────────────────────────────
+                # ── Log to terminal ─────────────────────────────────────────────
                 if self.verbose >= 1 or self._ep_count % 10 == 0:
-                    print(
+                    logger.info(
                         f"[Ep {self._ep_count:4d}] "
                         f"steps={self._ep_steps:4d}  "
                         f"reward={self._ep_reward:+7.1f}  "
@@ -197,14 +202,18 @@ class EpisodeLoggerCallback(BaseCallback):
         return True   # True = keep training
 
     def _on_training_end(self) -> None:
-        """Print final summary when training completes."""
+        """Log a final summary when training completes."""
         elapsed = time.time() - self._training_start
-        print(f"\n[Logger] Training complete.")
-        print(f"[Logger] Total episodes:  {self._ep_count}")
-        print(f"[Logger] Total timesteps: {self.num_timesteps}")
-        print(f"[Logger] Elapsed time:    {elapsed/60:.1f} minutes")
-        print(f"[Logger] Termination breakdown:")
+        lines = [
+            "",
+            "Training complete.",
+            f"Total episodes:  {self._ep_count}",
+            f"Total timesteps: {self.num_timesteps}",
+            f"Elapsed time:    {elapsed/60:.1f} minutes",
+            "Termination breakdown:",
+        ]
         for reason, count in self._term_counts.items():
             pct = 100 * count / max(self._ep_count, 1)
-            print(f"           {reason:20s}: {count:4d}  ({pct:.1f}%)")
-        print(f"[Logger] CSV saved to: {self.csv_path}")
+            lines.append(f"           {reason:20s}: {count:4d}  ({pct:.1f}%)")
+        lines.append(f"CSV saved to: {self.csv_path}")
+        logger.info("\n".join(lines))

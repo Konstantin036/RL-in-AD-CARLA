@@ -230,23 +230,27 @@ def test_termination():
         return ObservationData(lat, math.radians(hdg_deg), spd, 0.0)
 
     cases = [
-        # (obs_kwargs, collision, step, max_steps, red_light, expected_term, expected_trunc, note)
-        (dict(lat=0.0, hdg_deg=0.0),    False, 100,  1000, False, False, False, "normal step"),
-        (dict(lat=0.0, hdg_deg=0.0),    True,  100,  1000, False, True,  False, "collision"),
-        (dict(lat=4.0, hdg_deg=0.0),    False, 100,  1000, False, True,  False, "off road"),
-        (dict(lat=0.0, hdg_deg=95.0),   False, 100,  1000, False, True,  False, "wrong heading"),
-        (dict(lat=0.0, hdg_deg=0.0),    False, 100,  1000, True,  True,  False, "red light violation"),
-        (dict(lat=0.0, hdg_deg=0.0),    False, 1000, 1000, False, False, True,  "timeout"),
+        # (obs_kwargs, collision, step, max_steps, red_light, dest_reached, expected_term, expected_trunc, note)
+        (dict(lat=0.0, hdg_deg=0.0),    False, 100,  1000, False, False, False, False, "normal step"),
+        (dict(lat=0.0, hdg_deg=0.0),    True,  100,  1000, False, False, True,  False, "collision"),
+        (dict(lat=4.0, hdg_deg=0.0),    False, 100,  1000, False, False, True,  False, "off road"),
+        (dict(lat=0.0, hdg_deg=95.0),   False, 100,  1000, False, False, True,  False, "wrong heading"),
+        (dict(lat=0.0, hdg_deg=0.0),    False, 100,  1000, True,  False, True,  False, "red light violation"),
+        (dict(lat=0.0, hdg_deg=0.0),    False, 100,  1000, False, True,  True,  False, "destination reached"),
+        (dict(lat=0.0, hdg_deg=0.0),    True,  100,  1000, False, True,  True,  False, "collision wins over destination_reached"),
+        (dict(lat=0.0, hdg_deg=0.0),    False, 1000, 1000, False, False, False, True,  "timeout"),
     ]
 
     print(f"  {'collision':>10}  {'lat':>5}  {'hdg°':>6}  "
           f"{'step':>5}  {'term':>6}  {'trunc':>6}  note")
     print("  " + "-" * 62)
 
-    for obs_kw, collision, step, max_steps, red_light, exp_term, exp_trunc, note in cases:
+    for obs_kw, collision, step, max_steps, red_light, dest_reached, exp_term, exp_trunc, note in cases:
         obs = make_obs(**obs_kw)
         term, trunc, reason = check_termination(
-            obs, collision, step, max_steps, red_light_violation=red_light
+            obs, collision, step, max_steps,
+            red_light_violation=red_light,
+            destination_reached=dest_reached,
         )
         ok_term  = (term  == exp_term)
         ok_trunc = (trunc == exp_trunc)
@@ -257,6 +261,18 @@ def test_termination():
               f"{step:>5}  {str(term):>6}  {str(trunc):>6}  "
               f"{'✓' if ok else '✗'}  {note}"
               f"{' [' + reason + ']' if reason else ''}")
+        assert ok, f"termination test failed: {note}"
+
+    # destination_reached must not be flagged as the reason when something
+    # else terminal happened on the same step (collision wins).
+    obs = make_obs(lat=0.0, hdg_deg=0.0)
+    _, _, reason = check_termination(
+        obs, collision_flag=True, step_count=100, max_steps=1000,
+        destination_reached=True,
+    )
+    assert reason == "collision", (
+        f"expected 'collision' to win over destination_reached, got {reason!r}"
+    )
 
     print("  ✓ PASSED")
 

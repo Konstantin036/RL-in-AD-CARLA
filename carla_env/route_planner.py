@@ -31,6 +31,16 @@ if TYPE_CHECKING:
     import carla
 
 
+# Vertical offsets for drawing route waypoints, which sit exactly at
+# road-surface height — lifted purely so the debug-draw shapes render
+# above the road mesh instead of clipping into it. Deliberately smaller
+# than env.py's SPAWN_HEIGHT_OFFSET_M: that one needs enough clearance to
+# avoid a ground-clipping *physics* spawn collision, a different and
+# stricter requirement than "visible above the road surface."
+ROUTE_LINE_HEIGHT_M     = 0.3
+TARGET_MARKER_HEIGHT_M  = 0.5
+
+
 @dataclass
 class RouteWaypoint:
     """A waypoint belonging to the planned route."""
@@ -49,17 +59,6 @@ class RoutePlanner:
     This is intentionally kept simple for the first integration step.
     More advanced routing/cost functions can be added later.
     """
-
-    # CARLA GlobalRoutePlanner RoadOption values.
-    # Keeping these locally avoids coupling the rest of the project
-    # to a particular enum implementation.
-    LANEFOLLOW = 4
-    LEFT = 1
-    RIGHT = 2
-    STRAIGHT = 3
-    CHANGE_LANE_LEFT = 5
-    CHANGE_LANE_RIGHT = 6
-    VOID = 0
 
     def __init__(
         self,
@@ -120,17 +119,6 @@ class RoutePlanner:
             for waypoint, road_option in route
         ]
 
-    def plan_route_from_waypoints(
-        self,
-        start_waypoint: carla.Waypoint,
-        destination_waypoint: carla.Waypoint,
-    ) -> List[RouteWaypoint]:
-        """Convenience wrapper using CARLA waypoints."""
-        return self.plan_route(
-            start_waypoint.transform.location,
-            destination_waypoint.transform.location,
-        )
-
     @staticmethod
     def distance(
         location_a: carla.Location,
@@ -149,59 +137,95 @@ class RoutePlanner:
         location: carla.Location,
         start_index: int = 0,
         max_search_ahead: int = 30,
+        max_search_behind: int = 5,
+        patience: int = 3,
     ) -> int:
         """
         Find the route waypoint closest to the vehicle, respecting the
         route's own order.
 
         Walks forward from start_index, tracking the running closest
-        point, and stops at the first waypoint where distance starts
-        increasing again (i.e. the first local minimum). This is
+        point, and stops once distance has failed to improve for
+        `patience` consecutive waypoints (i.e. a local minimum). This is
         deliberately NOT "the closest point within the search window" —
-        it never looks past the point where it started moving away
-        again, so it can't skip ahead to a different, out-of-sequence
-        point on the route no matter how spatially close that point is.
-        That matters whenever the route curves back near itself (a tight
-        turn, a loop, two lanes running close together): the waypoints
-        must be visited in the order the route actually defines, based
-        on the planned start and destination — not in whichever order
-        happens to be nearest in raw distance. A pure global-minimum
-        search over a search window (an earlier version of this method)
-        does not have this guarantee: a later, out-of-sequence point
-        that happens to be closer still wins if it's inside the window.
+        it never looks far past the point where it stopped improving, so
+        it can't skip ahead to a different, out-of-sequence point on the
+        route no matter how spatially close that point is. That matters
+        whenever the route curves back near itself (a tight turn, a
+        loop, two lanes running close together): the waypoints must be
+        visited in the order the route actually defines, based on the
+        planned start and destination — not in whichever order happens
+        to be nearest in raw distance. A pure global-minimum search over
+        a search window (an earlier version of this method) does not
+        have this guarantee: a later, out-of-sequence point that happens
+        to be closer still wins if it's inside the window.
+
+        Also checks a small bounded window behind start_index. A purely
+        forward-only search (an earlier version of this method) can
+        never recover once the vehicle ends up behind its last tracked
+        index — e.g. rolling back a little on an incline while stopped
+        at a red light, or a near-stall wobble — route_index would
+        freeze there permanently even as the vehicle resumes driving
+        forward normally afterward (confirmed via code review).
 
         start_index can be used to avoid searching the entire route
         every simulation step.
 
-        max_search_ahead bounds how far the walk is allowed to go before
-        giving up (default 30, i.e. 60m at the 2.0m sampling_resolution
-        this project uses) — a defensive limit for the case where
-        distance never stops decreasing within a reasonable range (e.g.
-        start_index is badly out of sync), not the primary mechanism
-        that keeps tracking correct.
+        max_search_ahead bounds how far the forward walk is allowed to
+        go before giving up (default 30, i.e. 60m at the 2.0m
+        sampling_resolution this project uses) — a defensive limit for
+        the case where distance never stops decreasing within a
+        reasonable range (e.g. start_index is badly out of sync), not
+        the primary mechanism that keeps tracking correct.
+
+        max_search_behind bounds the backward check (default 5, i.e.
+        10m) — small on purpose, just enough to recover from minor
+        drift, not enough to reintroduce order violations from that
+        direction.
+
+        patience (default 3) tolerates a few consecutive non-improving
+        waypoints before concluding the local minimum has been passed,
+        so a single irregular/outlier waypoint from GlobalRoutePlanner
+        (e.g. at a junction or lane-merge boundary) can't prematurely
+        halt the search one step too early (confirmed via code review) —
+        still bounded, so it doesn't reopen the out-of-sequence-jump
+        problem the forward-only version was built to close.
         """
         if not route:
             raise ValueError("Route is empty.")
 
         start_index = max(0, min(start_index, len(route) - 1))
-        search_end = min(start_index + max_search_ahead, len(route))
+
+        def dist_at(i: int) -> float:
+            return self.distance(location, route[i].waypoint.transform.location)
 
         best_index = start_index
-        best_distance = self.distance(
-            location, route[start_index].waypoint.transform.location
-        )
+        best_distance = dist_at(start_index)
 
-        for i in range(start_index + 1, search_end):
-            d = self.distance(location, route[i].waypoint.transform.location)
+        # Small bounded backward check — see max_search_behind's docstring.
+        behind_bound = max(0, start_index - max_search_behind)
+        for i in range(start_index - 1, behind_bound - 1, -1):
+            d = dist_at(i)
             if d < best_distance:
                 best_distance = d
                 best_index = i
             else:
-                # Distance increased — we've passed the local minimum
-                # along the route's own order. Stop here rather than
-                # continuing to scan for a spatially closer but
-                # out-of-sequence point further down the route.
                 break
+
+        # Forward walk, tolerating up to `patience` non-improving steps
+        # in a row before concluding the local minimum has been passed.
+        search_end = min(start_index + max_search_ahead, len(route))
+        stale_steps = 0
+        for i in range(start_index + 1, search_end):
+            d = dist_at(i)
+            if d < best_distance:
+                best_distance = d
+                best_index = i
+                stale_steps = 0
+            else:
+                stale_steps += 1
+                if stale_steps >= patience:
+                    break
 
         return best_index
 
@@ -230,47 +254,59 @@ class RoutePlanner:
         return route[target_index]
 
     @staticmethod
-    def is_junction(route_waypoint: RouteWaypoint) -> bool:
-        """Return True if this route waypoint belongs to a junction."""
-        return route_waypoint.waypoint.is_junction
-
-    @classmethod
-    def road_option_name(cls, road_option: int) -> str:
-        """Convert a RoadOption integer into a readable name."""
-        names = {
-            cls.VOID: "VOID",
-            cls.LEFT: "LEFT",
-            cls.RIGHT: "RIGHT",
-            cls.STRAIGHT: "STRAIGHT",
-            cls.LANEFOLLOW: "LANEFOLLOW",
-            cls.CHANGE_LANE_LEFT: "CHANGE_LANE_LEFT",
-            cls.CHANGE_LANE_RIGHT: "CHANGE_LANE_RIGHT",
-        }
-
-        return names.get(road_option, "UNKNOWN")
-
-    @staticmethod
     def remaining_distance(
         route: List[RouteWaypoint],
         current_index: int,
     ) -> float:
-        """Calculate approximate remaining route distance."""
+        """
+        Calculate approximate remaining route distance from scratch.
+
+        O(route length - current_index) — fine for a one-off query, but
+        env.py calls this every single step purely to populate a logging
+        field, which turns into real repeated cost on Town10's long
+        random routes over up to 1000 steps/episode (confirmed via code
+        review). env.py uses precompute_remaining_distances() instead for
+        that O(1)-per-step case; this method stays for one-off queries
+        and is what precompute_remaining_distances() is checked against
+        in scripts/test_route_planner.py.
+        """
         if not route or current_index >= len(route) - 1:
             return 0.0
 
         distance = 0.0
 
         for i in range(current_index, len(route) - 1):
-            a = route[i].waypoint.transform.location
-            b = route[i + 1].waypoint.transform.location
-
-            dx = a.x - b.x
-            dy = a.y - b.y
-            dz = a.z - b.z
-
-            distance += (dx * dx + dy * dy + dz * dz) ** 0.5
+            distance += RoutePlanner.distance(
+                route[i].waypoint.transform.location,
+                route[i + 1].waypoint.transform.location,
+            )
 
         return distance
+
+    @staticmethod
+    def precompute_remaining_distances(route: List[RouteWaypoint]) -> List[float]:
+        """
+        Precompute remaining_distance() for every index in the route at
+        once, in a single O(route length) backward pass — call this once
+        per episode (right after plan_route()) so env.py's per-step
+        lookup is O(1) instead of recomputing the whole remaining route
+        from scratch on every single step (see remaining_distance()'s
+        docstring for why that matters).
+
+        Returns a list `remaining` where `remaining[i]` equals
+        `remaining_distance(route, i)`.
+        """
+        n = len(route)
+        if n == 0:
+            return []
+
+        remaining = [0.0] * n
+        for i in range(n - 2, -1, -1):
+            remaining[i] = remaining[i + 1] + RoutePlanner.distance(
+                route[i].waypoint.transform.location,
+                route[i + 1].waypoint.transform.location,
+            )
+        return remaining
 
     @staticmethod
     def draw_route(world, route: List[RouteWaypoint], life_time: float = 0.0) -> None:
@@ -293,8 +329,8 @@ class RoutePlanner:
             return
 
         for i in range(len(route) - 1):
-            loc_a = route[i].waypoint.transform.location + carla.Location(z=0.3)
-            loc_b = route[i + 1].waypoint.transform.location + carla.Location(z=0.3)
+            loc_a = route[i].waypoint.transform.location + carla.Location(z=ROUTE_LINE_HEIGHT_M)
+            loc_b = route[i + 1].waypoint.transform.location + carla.Location(z=ROUTE_LINE_HEIGHT_M)
             world.debug.draw_line(
                 loc_a, loc_b,
                 thickness=0.15,
@@ -302,7 +338,7 @@ class RoutePlanner:
                 life_time=life_time,
             )
 
-        destination = route[-1].waypoint.transform.location + carla.Location(z=0.3)
+        destination = route[-1].waypoint.transform.location + carla.Location(z=ROUTE_LINE_HEIGHT_M)
         world.debug.draw_point(
             destination,
             size=0.2,
@@ -324,7 +360,7 @@ class RoutePlanner:
         if route_waypoint is None:
             return
 
-        location = route_waypoint.waypoint.transform.location + carla.Location(z=0.5)
+        location = route_waypoint.waypoint.transform.location + carla.Location(z=TARGET_MARKER_HEIGHT_M)
         world.debug.draw_point(
             location,
             size=0.15,

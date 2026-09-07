@@ -52,7 +52,10 @@ class EpisodeResult:
     reward: float
     length: int
     mean_lateral_distance: float   # mean(|lateral_distance_m|) over the episode
-    termination_reason: str        # "timeout" | "collision" | "off_road" | "wrong_heading"
+    termination_reason: str        # "destination_reached" | "timeout" | "collision" |
+                                    # "off_road" | "wrong_heading" | "stall" |
+                                    # "red_light_violation" — see
+                                    # carla_env/reward.py's check_termination()
 
 
 @dataclass
@@ -62,9 +65,9 @@ class EvaluationSummary:
     mean_reward: float
     std_reward: float
     mean_lateral_distance: float
-    success_rate: float            # fraction with termination_reason == "timeout"
+    success_rate: float            # fraction with termination_reason == "destination_reached"
     mean_length: float
-    termination_counts: dict       # e.g. {"timeout": 18, "collision": 2}
+    termination_counts: dict       # e.g. {"destination_reached": 18, "collision": 2}
 
 
 # ── Pure aggregation function (no CARLA, no I/O — easy to test offline) ────────
@@ -92,7 +95,12 @@ def compute_summary(results: List[EpisodeResult]) -> EvaluationSummary:
             termination_counts.get(r.termination_reason, 0) + 1
         )
 
-    success_count = termination_counts.get("timeout", 0)
+    # Success = the agent actually completed its planned route. Not
+    # "timeout" — timeout means the episode ran out of time without
+    # crashing, which isn't the same as reaching the destination; that
+    # bug used to report success_rate near 0% for a model that reliably
+    # finishes every route (confirmed via code review).
+    success_count = termination_counts.get("destination_reached", 0)
 
     return EvaluationSummary(
         n_episodes=n,
@@ -163,19 +171,31 @@ def write_csv(results: List[EpisodeResult], path: str) -> None:
 
 
 def print_summary(summary: EvaluationSummary) -> None:
-    """Print a human-readable evaluation report to the console."""
-    print("\n" + "=" * 55)
-    print("  EVALUATION SUMMARY")
-    print("=" * 55)
-    print(f"  Episodes:              {summary.n_episodes}")
-    print(f"  Mean reward:           {summary.mean_reward:.2f} (+/- {summary.std_reward:.2f})")
-    print(f"  Mean lateral distance: {summary.mean_lateral_distance:.4f} m")
-    print(f"  Success rate:          {summary.success_rate * 100:.1f}%")
-    print(f"  Mean episode length:   {summary.mean_length:.1f} steps")
-    print("  Termination reasons:", end="")
+    """
+    Log a human-readable evaluation report.
+
+    logger, not print() — rule 8 in CLAUDE.md ("Use logger (not print)
+    inside carla_env/ and agent/"). Built as one multi-line string and
+    logged once rather than one logger call per line, so the report
+    still reads as a single visual block instead of being broken up by
+    a "[INFO] agent.evaluate:" prefix on every line.
+    """
+    lines = [
+        "",
+        "=" * 55,
+        "  EVALUATION SUMMARY",
+        "=" * 55,
+        f"  Episodes:              {summary.n_episodes}",
+        f"  Mean reward:           {summary.mean_reward:.2f} (+/- {summary.std_reward:.2f})",
+        f"  Mean lateral distance: {summary.mean_lateral_distance:.4f} m",
+        f"  Success rate:          {summary.success_rate * 100:.1f}%",
+        f"  Mean episode length:   {summary.mean_length:.1f} steps",
+        "  Termination reasons:",
+    ]
     for reason, count in sorted(summary.termination_counts.items()):
-        print(f"    {reason:15s} {count}")
-    print("=" * 55 + "\n")
+        lines.append(f"    {reason:15s} {count}")
+    lines.append("=" * 55)
+    logger.info("\n".join(lines))
 
 
 # ── Environment construction ──────────────────────────────────────────────────
