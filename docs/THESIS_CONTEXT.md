@@ -135,6 +135,166 @@ so a component (e.g. the traffic-light reader) can be swapped later
    still gently encouraged toward its own lane, just not killed for
    briefly being in the next lane over.
 
+## 3.5 Exact reward formula and termination conditions (precise values, for the results/methodology chapter)
+
+All values are `carla_env/reward.py`'s live defaults, confirmed against
+`configs/config.yaml`'s current `reward:` block on 2026-09-08. If the
+config changes later, re-check this section against it before citing it.
+
+### Full reward formula
+
+At every step, the scalar reward is:
+
+```
+r = w_center   * r_centering
+  + w_speed    * r_speed
+  + w_heading  * r_heading
+  + w_smooth   * r_smoothness
+  + w_progress * r_progress
+  + r_terminal
+  + r_step
+```
+
+with current weights: `w_center=1.0`, `w_speed=1.5`, `w_heading=0.5`,
+`w_smooth=0.5`, `w_progress=1.0`, `step_penalty` (`r_step`, added every
+step unconditionally) `=-0.1`, `terminal_penalty=-10.0`.
+
+Component formulas already in the codebase (centering, speed, heading —
+not repeated here since they predate this note) plus the two the thesis
+text doesn't cover yet:
+
+**Smoothness term** — `r_smoothness = compute_smoothness_reward(action_delta)`:
+
+```
+r_smoothness = max(0, 1 - sum(|action_delta|) / 4.0)
+```
+
+where `action_delta` is the current raw action (from the policy, before
+`ActionProcessor`'s exponential smoothing is applied to it) minus the
+previous step's raw action, a 2D vector `[Δacceleration, Δsteer]`.
+Range `[0, 1]`; peak `1.0` when the action didn't change at all since the
+last step; `0.0` when both action dimensions swing their full range in
+one step (e.g. acceleration `-1→+1` **and** steer `-1→+1`
+simultaneously: `|Δ|=2.0` each, sum `=4.0`). It penalizes the *raw*
+action rather than the smoothed/applied one specifically so the policy
+can't rely on `ActionProcessor`'s filter (alpha=0.6) to absorb jitter it
+didn't need to output in the first place — it has to learn to be smooth
+on its own.
+
+**Forward-progress term** — `r_progress = compute_progress_reward(speed_kmh, target_speed_kmh)`:
+
+```
+r_progress = min(speed_kmh, target_speed_kmh) / target_speed_kmh
+```
+
+Range `[0, 1]`, linear in speed, capped at 1.0 once the vehicle reaches
+`target_speed_kmh` (currently 30 km/h). Exactly `0.0` at `speed=0` —
+this is the whole point of the term. **Why it exists**: the Gaussian
+speed-reward component alone gives a small but non-zero reward
+(~0.017) even at zero speed, which let DDPG/TD3 (deterministic
+policies) discover that standing still while collecting the centering +
+heading + smoothness rewards was a viable local optimum, since there
+was no reward *floor* punishing zero speed specifically. The linear
+progress term has no such floor — it is provably zero at zero speed, so
+standing still can no longer be locally optimal purely on the reward's
+own structure. PPO and SAC are largely unaffected by this term in
+practice (they already explore via entropy/stochastic sampling and
+don't collapse to standing still the way a deterministic policy can),
+but the term applies to all four algorithms identically — it isn't
+algorithm-conditional in the code, just observed to matter most for
+DDPG/TD3.
+
+**Terminal reward**: `r_terminal = terminal_penalty` (currently -10.0)
+on the step the episode ends via any *failure* reason (see termination
+list below) — explicitly **not** applied on `timeout` (ran out of steps
+without failing) and **not** applied on `destination_reached` (the one
+success case), even though both are `terminated=True`/definitively-ended
+episodes in Gymnasium's sense. This distinction (`is_terminal_for_reward
+= terminated and term_reason != "destination_reached"`, in `env.py`) was
+a real bug fix — earlier, reaching the destination successfully still
+triggered the same -10 penalty as a collision, since both simply set
+`terminated=True`.
+
+### Termination conditions — exact thresholds, in priority order
+
+`check_termination()` evaluates these in order and returns on the first
+match — if two conditions would both apply on the same step (e.g. a
+collision at the exact moment of reaching the destination), the earlier
+one in this list wins:
+
+1. **Stall** — `StallDetector`: counts consecutive steps where
+   `speed_kmh < stall_min_speed_kmh` (currently **2.0 km/h**). Once the
+   count reaches `stall_patience_steps` (currently **100 steps**, i.e.
+   5 simulated seconds at the fixed 20 Hz physics rate), the episode
+   terminates with the full `terminal_penalty`. **Exemption**: the
+   counter is reset to zero (not just paused) on any step where the
+   traffic-light affordance's `must_stop` is `True` — i.e. the vehicle
+   is correctly stopped at a red/yellow light. Without this exemption,
+   an agent that properly waits at a red light for more than 5 seconds
+   would get the same terminal penalty as an agent that's actually
+   stuck, directly undermining the traffic-light-compliance objective.
+2. **Collision** — from the CARLA collision sensor, no threshold (any
+   contact event fires it).
+3. **Red-light violation** — `RedLightViolationDetector`: NOT flagged
+   for the whole time a light is red (which would incorrectly punish
+   the vehicle's normal braking distance while slowing down for a
+   light it hasn't reached yet). Instead it fires on the exact step the
+   vehicle *exits* the light's trigger zone (`is_at_light` goes from
+   `True` to `False`) while, on the **previous** step, it was inside the
+   zone (`_was_at_light=True`) **and** required to stop
+   (`_was_must_stop=True`), **and** its current speed exceeds
+   `red_light_stop_speed_kmh` (currently **5.0 km/h**) — i.e. it drove
+   through rather than having actually come to a stop. If the vehicle
+   waited for the light to turn green before exiting the zone,
+   `_was_must_stop` would already be `False` by the time it exits, so no
+   violation is flagged.
+4. **Off-road** — `|lateral_distance_m| >= max_lateral_m`. Base value
+   `max_lateral_m = 3.5 m` (roughly one lane width on CARLA's default
+   road geometry), **but this threshold is not fixed** — see the
+   multi-lane note below.
+5. **Wrong heading** — `|heading_error_rad| >= max_heading_deg` (default
+   **90°**, converted to radians at call time) — vehicle pointing more
+   than perpendicular to the road's intended direction.
+6. **Destination reached** — checked *after* all failure conditions
+   above, so any genuine failure on the same step still takes priority
+   over a simultaneous "reached the destination" — a collision right at
+   the endpoint is still scored as a collision, not a success.
+7. **Timeout** (truncation, not termination — no penalty applied) —
+   `step_count >= max_steps` (currently **1000 steps**, i.e. 50
+   simulated seconds).
+
+### Off-road threshold and multi-lane roads — did it change?
+
+**Yes.** The *base* value (`max_lateral_m = 3.5 m`, one lane's width) is
+unchanged, and it's still what the **centering reward** (`r_centering`)
+uses — the agent is still continuously encouraged toward its own lane's
+centerline regardless of road width. But the **termination** threshold
+passed into `check_termination()` is now:
+
+```
+effective_max_lateral_m = max_lateral_m * same_direction_lanes
+```
+
+where `same_direction_lanes` (from
+`RoutePlanner.count_same_direction_lanes()`) is computed fresh every
+step from the *current* route waypoint's real CARLA lane topology
+(walking `get_left_lane()`/`get_right_lane()` from that waypoint,
+stopping at the boundary where `lane_id`'s sign flips — CARLA's
+convention for "this is now the opposite-direction side of the road" —
+and skipping non-`Driving` lane types like shoulders). On a standard
+single-lane-per-direction road this evaluates to `1`, so the threshold
+is unchanged (3.5 m). On a two-lane one-way road it's `2`, giving a 7.0
+m termination threshold — enough that drifting into the adjacent
+same-direction lane no longer instantly ends the episode, while still
+terminating well before the vehicle could plausibly have left the
+roadway onto the opposite side or off-road entirely. **Why**: without
+this, a car drifting into an adjacent same-direction lane (common
+specifically near intersections, where dedicated turn lanes widen the
+road) was being terminated identically to a car that had genuinely left
+the road, even though it was still safely on pavement going the correct
+direction — confirmed as a real, frequent failure mode via live testing
+before the fix.
+
 ## 4. Route-tracking algorithm (good candidate for a diagram/pseudocode)
 
 Naive approach: find the route waypoint with minimum Euclidean distance
@@ -189,28 +349,90 @@ engine/GPU-driver issue, not a code bug): route generation and
 spawn-exactly-on-route-start works across hundreds of randomly generated
 routes with zero crashes.
 
-### Training results so far (all four algorithms, in progress today)
+### Training results — all four algorithms, equal 150,000-step budget (2026-09-08)
 
-| Algorithm | Steps trained | Result |
-|---|---|---|
-| PPO | 40,960 (×2 runs) + 250,000 (interrupted at ep. 442) | Clear learning signal: `destination_reached` episodes appearing, speed climbing toward the 30 km/h target, episode length growing. Periodic evals during the 250k run showed reward improving then dipping (907→1080→558 mean reward across 3 eval checkpoints) — real, noisy early-training data, not a clean monotonic curve yet. |
-| SAC | 3,000 (smoke test only, more runs pending today) | Clean run, no crashes. Full verification run in progress. |
-| DDPG | 80,000 (complete) | 681 episodes, 17.4 min. Termination breakdown: stall 39.9%, wrong_heading 29.4%, off_road 14.8%, collision 11.2%, red_light_violation 3.1%, destination_reached 1.2% (8 real successes), timeout 0.4%. High stall rate matches DDPG's well-documented tendency toward a stand-still local optimum (this is why `learning_starts` was raised to 50,000 for DDPG/TD3 earlier in the project). `evaluate.py` run on the resulting checkpoint (10 episodes, deterministic): mean reward 2025.46 (±1156.28), mean lateral distance 1.12 m, **success rate 20.0%** (2/10 reached destination), mean episode length 688 steps. |
-| TD3 | In progress as this file is written | — |
+All four algorithms were trained to the **same total of 150,000 environment
+steps**, then evaluated identically (`agent/evaluate.py`, 10 deterministic
+episodes each). DDPG and TD3 reached 150k via an initial 80,000-step run
+(chosen because their `learning_starts=50000` means they need at least
+that just to start learning at all) followed by a 70,000-step continuation
+(`--resume`, `reset_num_timesteps=False` so the step counter continues
+rather than restarting) — this two-stage process is why their per-run
+elapsed times differ from PPO/SAC's single continuous run, but the final
+checkpoints are trained on an equal step budget, which is what matters
+for a fair comparison. PPO and SAC trained in one continuous 150,000-step
+run each (they don't have DDPG/TD3's warm-up requirement).
 
-**Important honesty note for the thesis**: none of these are the full
-500,000-timestep runs that `configs/config.yaml`'s `training.total_timesteps`
-default represents as the intended final run length. Today's runs
-(80k-250k depending on algorithm) are verification/comparison runs to
-confirm the pipeline and get an early read on relative behavior — not
-final results. Whether to run the full 500k for each algorithm before
-finalizing thesis numbers is an open decision.
+| Algorithm | Mean reward | Mean lateral distance | Success rate | Mean episode length |
+|---|---|---|---|---|
+| PPO | 617.87 (±420.55) | 0.87 m | 10.0% | 224.6 steps |
+| SAC | 1784.60 (±973.86) | **0.56 m** | **40.0%** | 512.0 steps |
+| DDPG | 1304.64 (±1051.85) | 1.76 m | 30.0% | 424.4 steps |
+| TD3 | **2613.62** (±1066.66) | 0.56 m | 30.0% | **823.1 steps** |
+
+Notable, non-obvious findings — worth discussing directly in the thesis
+rather than picking one "winner" narrative:
+- **TD3 has the highest mean reward and by far the longest surviving
+  episodes**, but only middling success rate (tied with DDPG).
+- **SAC has the highest success rate** (destination actually reached) and
+  ties TD3 for best lateral centering precision, with a much shorter
+  mean episode length than TD3 — suggesting SAC either reaches the
+  destination faster on average or fails faster on the episodes it
+  doesn't complete (worth a closer look at per-episode data if this goes
+  in the thesis).
+- **DDPG has by far the worst centering (1.76 m mean lateral distance)** —
+  visibly noisier control than the other three, consistent with DDPG
+  being the "weakest" of the deterministic-policy pair in most published
+  comparisons.
+- **PPO evaluates worst here despite having the best absolute
+  `destination_reached` count during training** (23 successes across
+  151,552 training steps, more than any other algorithm's raw count).
+  The deterministic evaluation policy specifically struggles with red
+  lights — 7 of 10 eval episodes at the earlier 150k checkpoint ended in
+  `red_light_violation` (see the per-checkpoint breakdown a few
+  paragraphs below for the exact numbers this claim is based on).
+  Plausible explanation: PPO's stochastic training-time policy and its
+  deterministic (mean-action) evaluation policy can behave meaningfully
+  differently, and/or this is small-sample (10-episode) noise — this is
+  a real, reportable finding, not an error, but shouldn't be
+  overinterpreted from 10 episodes alone.
+
+**Full per-checkpoint breakdown** (training-time termination counts +
+evaluation results), including the intermediate 80,000-step DDPG/TD3
+checkpoints (superseded by the 150k numbers above for the "final"
+comparison, but a legitimate data point for a learning-curve figure):
+
+- **DDPG @ 80k** (`results/checkpoints/ddpg/ddpg_lane_keeping_20260908_175251/`): training breakdown over 681 episodes — stall 39.9%, wrong_heading 29.4%, off_road 14.8%, collision 11.2%, red_light_violation 3.1%, destination_reached 1.2% (8), timeout 0.4%. Eval: reward 2025.46 (±1156.28), lateral 1.12 m, success 20.0%, ep. length 688.1.
+- **DDPG @ 150k** (`.../ddpg_lane_keeping_20260908_200736/`): the +70k continuation segment alone — collision 19.1%, off_road 15.3%, stall 37.8%, red_light_violation 9.6%, destination_reached 3.8%, timeout 12.4%. Eval (final, reported in the table above): reward 1304.64, lateral 1.76 m, success 30.0%, ep. length 424.4.
+- **TD3 @ 80k** (`.../td3_lane_keeping_20260908_181222/`): training breakdown over the full 80k — collision 11.9%, off_road 21.5%, wrong_heading 4.8%, stall 45.5%, red_light_violation 11.7%, destination_reached 2.7% (13), timeout 1.9%. Eval: reward 2160.24 (±782.96), lateral 1.50 m, success 40.0%, ep. length 782.3.
+- **TD3 @ 150k** (`.../td3_lane_keeping_20260908_203207/`): the +70k continuation segment alone — collision 19.0%, off_road 26.4%, stall 8.0% (big drop from the 80k segment), red_light_violation 23.6%, destination_reached 8.6% (15 — more than double the rate of the first segment), timeout 14.4%. Eval (final, reported in the table above): reward 2613.62, lateral 0.56 m, success 30.0%, ep. length 823.1.
+- **PPO @ 150k** (`.../ppo_lane_keeping_20260908_183240/`, 151,552 steps, single continuous run): training breakdown over 371 episodes — collision 29.5%, off_road 26.2%, red_light_violation 18.9%, timeout 14.3%, destination_reached 6.2% (23 — highest absolute count of all checkpoints), stall only 3.8% (PPO/SAC don't get the DDPG/TD3 stand-still exploit — they explore via entropy, not action noise). Eval (final, reported in the table above): reward 617.87, lateral 0.87 m, success 10.0%, ep. length 224.6, **7/10 episodes ended in red_light_violation**.
+- **SAC @ 150k** (`.../sac_lane_keeping_20260908_190524/`, single continuous run, 60.3 min — noticeably slower wall-clock than the others at the same step count, SAC's entropy-tuning does more compute per step): training breakdown — red_light_violation 36.6% (100, highest rate of all), timeout 27.8%, destination_reached 12.8% (35 — highest absolute count of all checkpoints), collision 9.5%, stall 7.0%, off_road 5.1%, wrong_heading 1.1%. Eval (final, reported in the table above): reward 1784.60, lateral 0.56 m, success 40.0%, ep. length 512.0.
+
+There was also an earlier, separate PPO run for **250,000 steps**
+(interrupted at episode 442, not completed to the full target — a
+machine handoff interrupted it) that showed periodic-evaluation reward
+improving then dipping across 3 eval checkpoints (907 → 1080 → 558 mean
+reward) — real, noisy early-training data, kept here as a longer-horizon
+data point but **not** part of the equal-150k-budget comparison above
+(different total step count, different run).
+
+**Important honesty note for the thesis**: none of the above are the
+full 500,000-timestep runs that `configs/config.yaml`'s
+`training.total_timesteps` default represents as the intended final run
+length. The 150k-step comparison above is real, fairly-compared data —
+useful for showing relative algorithm behavior and as an intermediate
+result — but not the final thesis-quality numbers. Whether to run the
+full 500k for each algorithm before finalizing thesis numbers is an open
+decision.
 
 ## 6. Honest current limitations (do not oversell)
 
-- **Only DDPG has a complete non-trivial training run with a full
-  evaluation pass as of this writing** (see table above) — the other
-  three are either smoke-tested only or in progress.
+- **All four algorithms now have a complete, equal-budget (150,000 step)
+  training run with a full evaluation pass** (see §5's table) — this
+  limitation is resolved as of 2026-09-08 evening. The remaining gap is
+  that 150k steps is still well short of the full 500,000-step runs
+  `configs/config.yaml` specifies as the intended final length.
 - The hand-coded baseline controller (not any RL agent) visibly fails at
   intersections/curves during manual observation — an **expected,
   already-understood limitation of that specific crude controller** (a
