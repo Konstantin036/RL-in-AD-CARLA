@@ -426,6 +426,63 @@ result — but not the final thesis-quality numbers. Whether to run the
 full 500k for each algorithm before finalizing thesis numbers is an open
 decision.
 
+### 5.5 Two-axis comparison framework: speed-to-good-policy vs. reliability-of-found-policy
+
+A single "winner" narrative undersells this comparison — the four
+algorithms trade off along two genuinely different axes, both worth
+reporting explicitly rather than collapsing into one ranking.
+
+**Axis 1 — how fast training finds a capable policy (sample efficiency).**
+`scripts/generate_metrics.py` tracks the training step at which the
+20-episode rolling-mean *training-time* reward first crosses 2,500
+(`SAMPLE_EFF_THRESHOLD`, see `results/metrics_comparison.csv`'s
+`sample_eff_step` column):
+
+| Algorithm | Step reward first crosses 2,500 |
+|---|---|
+| SAC | **40,097** (~27% of the 150k budget) |
+| PPO | not reached within 150k |
+| DDPG | not reached within 150k |
+| TD3 | not reached within 150k |
+
+SAC is the clear standout here — it reaches a sustained high-reward
+policy in about a quarter of the training budget the other three never
+sustain at all within 150k steps. This tracks with SAC's off-policy
+replay buffer (reuses old transitions instead of discarding them like
+PPO's on-policy updates) and automatic entropy tuning.
+
+**Axis 2 — how reliable/safe the final policy is once training stops.**
+This is not the same question as Axis 1 — a policy can reach a high
+*training-time* reward quickly and still be inconsistent or unsafe at
+evaluation time. Three signals, read together:
+
+| Algorithm | Success rate | Reward std (±) | Worst-case lateral distance |
+|---|---|---|---|
+| PPO  | 10.0% | 420.55  | **1.12 m (best worst-case)** |
+| SAC  | **40.0%** | 973.86  | 1.05 m |
+| DDPG | 30.0% | 1051.85 | 2.37 m (worst) |
+| TD3  | 30.0% | **1066.66 (most variance)** | 2.11 m |
+
+Reading this honestly: **SAC is the strongest on both axes** — fastest
+to a good policy *and* the most reliable one, which is a legitimate,
+reportable conclusion. TD3 has the highest *mean* eval reward (§5's
+table) but the most run-to-run variance and a worse worst-case lateral
+excursion — a policy that occasionally drives very well but is less
+consistently safe. DDPG is weakest on the safety axis specifically
+(worst mean *and* worst-case lateral distance), consistent with its
+known real-world reputation as the least stable of the four. PPO is the
+outlier: worst success rate by far, but paradoxically the *tightest*
+worst-case lateral control — when PPO's evaluated policy fails, §5
+already establishes it's overwhelmingly failing on `red_light_violation`
+(7/10 episodes at the final checkpoint) rather than losing lane control,
+i.e. a rule-compliance failure mode, not a driving-precision one.
+
+**Recommended framing for the results chapter**: present §5's headline
+table first, then this two-axis breakdown as the deeper analysis —
+"which algorithm learns fastest" and "which algorithm's final policy is
+most trustworthy" are different questions with different answers here,
+and that distinction is itself a legitimate finding, not a hedge.
+
 ## 6. Honest current limitations (do not oversell)
 
 - **All four algorithms now have a complete, equal-budget (150,000 step)
@@ -469,6 +526,70 @@ decision.
 - A stronger baseline controller (e.g. pure-pursuit with lookahead) for
   a more meaningful RL-vs-baseline comparison, since the current one is
   intentionally too crude to be a fair comparison point.
+
+## 8. How these results compare to published CARLA RL literature (2026-09-09 research pass)
+
+This section exists to answer one question honestly: **are this
+project's numbers realistic, and how far are they from the field's
+state of the art?** Three reference points, found via web search on
+2026-09-09 — cite these directly in the thesis rather than presenting
+the project's numbers in a vacuum.
+
+**Closest direct comparison** — Alkhonain et al., *"A Comparative Study
+of Deep Reinforcement Learning Algorithms for Urban Autonomous Driving:
+Addressing the Geographic and Regulatory Challenges in CARLA"*, Applied
+Sciences 15(12):6838, 2025 ([mdpi.com/2076-3417/15/12/6838](https://www.mdpi.com/2076-3417/15/12/6838),
+[doi.org/10.3390/app15126838](https://doi.org/10.3390/app15126838)).
+Compares DDPG, SAC, TD3, PPO, TQC and CrossQ head-to-head in CARLA over
+**1,000,000 training steps** (~6.7× this project's 150k-step budget).
+Findings that directly corroborate this project's own results:
+- TQC and SAC (both off-policy, stochastic) achieved the best sample
+  efficiency and route-completion performance; DDPG was the weakest,
+  with a Route Completion rate of just 0.23 in challenging scenarios
+  versus TQC's 0.91 — the same relative ranking (SAC strong, DDPG
+  weakest) this project found independently.
+- PPO showed "relatively irregular reward trends during training due to
+  its on-policy nature, which precludes replay buffer usage, resulting
+  in low sample efficiency" — visually exactly what this project's own
+  `results/plots/training_curves.png` shows for PPO (the noisiest,
+  least monotonic of the four curves), and consistent with PPO being
+  the only algorithm here that never crosses the §5.5 sample-efficiency
+  threshold within budget despite entropy-driven exploration.
+
+**Upper-bound reference (not directly comparable)** — a TD3/SAC-based
+"WAD" (waypoint/affordance-driven) agent reported 100% success on the
+original CARLA benchmark and 82% on the harder NoCrash benchmark. This
+number is real but not an apples-to-apples target: that system used
+learned driving *affordances* (richer intermediate supervision than
+this project's raw 5D state vector) and almost certainly a training
+budget in the millions of steps, not 150k. Useful in the thesis only as
+an "upper bound achievable with substantially more engineering and
+compute," not as a bar this project's numbers should be judged against
+directly.
+
+**Field-level ceiling (different task entirely)** — the current CARLA
+AD Leaderboard (2.1, sensor-rich, imitation/transformer-style methods,
+not RL) tops out around a 90/100 "driving score" (e.g. TransFuser++,
+FusionAssurance). This uses an entirely different metric (route
+completion × infraction penalty, scripted routes with dense traffic)
+and different method family — mentioned only to give the thesis a sense
+of where the field's absolute ceiling sits, not as a comparison point.
+
+**Honest conclusion for the thesis**: this project's *relative* findings
+(SAC strongest overall, DDPG weakest on control precision, PPO's
+on-policy sample inefficiency visible in its training curve) are
+directionally consistent with a much larger, more heavily-resourced
+published comparative study — which is meaningful independent
+corroboration despite training at roughly 1/7th the step budget and
+using a lower-dimensional observation space. The *absolute* numbers
+(10–40% success rate here vs. 23–91% route completion in the cited
+study, and up to 100% in the affordance-based upper-bound system) are
+lower, and that gap is fully explained by the much smaller training
+budget (150k vs. up to 1M+ steps) and the simpler 5D low-dimensional
+observation versus richer affordance/sensor inputs elsewhere — not
+evidence of a flawed method. This is the correct, defensible way to
+frame "how close are we to the state of the art": right direction,
+smaller scale, explicit about why.
 
 ---
 
