@@ -527,6 +527,27 @@ and that distinction is itself a legitimate finding, not a hedge.
   a more meaningful RL-vs-baseline comparison, since the current one is
   intentionally too crude to be a fair comparison point.
 
+### 5.6 Environment screenshots (for reader familiarization)
+
+`results/screenshots/` (generated locally via `scripts/capture_screenshots.py`,
+not committed to git — large binaries, regenerate on demand) holds 4
+curated images of the live CARLA environment, captured with a trained
+SAC policy actually driving (not random actions), for the thesis's
+environment/setup section:
+
+- `01_map_overview.png` — top-down establishing shot of Town10HD_Opt's
+  central district (skyscrapers, waterfront) — gives the reader a sense
+  of the environment's visual complexity and scale.
+- `02_route_lane_keeping.png` — chase view of the ego vehicle centered
+  in its lane, with the green line showing the planned route/target
+  waypoint the observation is computed against (see §3.5/§4).
+- `03_intersection_redlight.png` — chase view at an intersection where
+  `traffic_light_must_stop` was True at capture time (visible traffic
+  signal heads down the road) — illustrates the traffic-light
+  affordance from §2/§3.
+- `04_driver_pov.png` — windshield-height forward view, for a "what the
+  road looks like" establishing shot.
+
 ## 8. How these results compare to published CARLA RL literature (2026-09-09 research pass)
 
 This section exists to answer one question honestly: **are this
