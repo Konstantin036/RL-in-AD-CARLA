@@ -547,6 +547,15 @@ environment/setup section:
   affordance from §2/§3.
 - `04_driver_pov.png` — windshield-height forward view, for a "what the
   road looks like" establishing shot.
+- `05_hero_shot.png` — front-quarter angle of the vehicle at a
+  crosswalk, warm sunset lighting — a clean "here's the car" shot for
+  a title page or the environment section's opening figure.
+- `06_curve_turn.png` — chase view mid-turn (large steering command),
+  sunset lighting, route line visibly curving — a more dynamic
+  complement to `02`'s straight-road shot.
+- `07_aerial_establishing.png` — elevated 3/4 "drone" view of the
+  vehicle approaching an intersection, sunset lighting — the most
+  cinematic of the set, good as a section-opening or cover image.
 
 ## 8. How these results compare to published CARLA RL literature (2026-09-09 research pass)
 
