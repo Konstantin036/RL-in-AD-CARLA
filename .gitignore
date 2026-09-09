@@ -6,6 +6,7 @@
 results/logs/
 results/checkpoints/
 results/plots/
+results/screenshots/
 
 # Python
 __pycache__/
