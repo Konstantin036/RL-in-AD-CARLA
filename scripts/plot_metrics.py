@@ -685,11 +685,26 @@ def plot_radar_chart(outdir, window=20):
 
     # Each tuple is (lo, hi): the "realistic performance spectrum" for this metric.
     # lo = decent-but-not-great, hi = excellent.  Values outside clamp to [0, 1].
+    #
+    # reward/lane_ctr/speed_adh were originally calibrated against a fully
+    # converged (~500k-step) model's expected performance. At this
+    # project's actual 150k-step checkpoints (see docs/THESIS_CONTEXT.md
+    # sec. 5), every algorithm's real value falls *below* those ranges --
+    # confirmed by inspecting plot_radar_chart's own `raw` dict values
+    # (reward 618-2614, lane_ctr 0.50-0.84, speed_adh 0.43-0.77) against
+    # the old (2500,3500)/(0.85,1.0)/(0.85,1.0) bounds. That pinned 3 of 6
+    # axes to exactly 0.0 for every algorithm -- e.g. PPO's 618 and TD3's
+    # 2614 reward (a 4x real difference) both rendered as an identical
+    # flat "0", which is actively misleading, not just hard to read.
+    # Rescaled to this project's actual achieved spread with headroom
+    # above the current best (150k steps is an intermediate result, not
+    # the final 500k target) -- revisit these bounds once/if full 500k
+    # runs exist and the achievable range shifts upward.
     REF_RANGES = {
-        "reward":     (2500.0, 3500.0),  # practical range for our reward function
-        "lane_ctr":   (0.85,   1.0),     # 85% → 100% of perfect centering score
+        "reward":     (500.0,  3000.0),  # actual spread: 618-2614
+        "lane_ctr":   (0.45,   0.90),    # actual spread: 0.50-0.84
         "success":    (0.0,    1.0),     # full range
-        "speed_adh":  (0.85,   1.0),     # 85 % → 100 % target-speed adherence
+        "speed_adh":  (0.35,   0.85),    # actual spread: 0.43-0.77
         "smoothness": (0.5,    1.0),     # moderate to excellent steering smoothness
         "sample_eff": (0.0,    1.0),     # full range (0 = never converged, 1 = instant)
     }
@@ -826,7 +841,7 @@ def plot_radar_chart(outdir, window=20):
 
     fig.text(
         0.5, 0.01,
-        "Scale: reward [2500→3500], lane centering / speed adherence [85%→100%], "
+        "Scale: reward [500→3000], lane centering [45%→90%], speed adherence [35%→85%], "
         "smoothness [50%→100%], success & sample efficiency [0→100%].",
         ha="center", fontsize=8, color="#666666", style="italic",
     )
