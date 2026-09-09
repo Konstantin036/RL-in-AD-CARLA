@@ -337,7 +337,7 @@ def plot_training_curves(outdir, smooth_window=20):
         ax.annotate(
             "Final: {:.0f}".format(final_val),
             xy=(ts[-1], final_val),
-            xytext=(-60, 10),
+            xytext=(-60, 25),
             textcoords="offset points",
             fontsize=8,
             color=color,
@@ -488,7 +488,7 @@ def plot_lateral_progress(outdir, smooth_window=20):
         ax.annotate(
             "Final: {:.3f} m".format(final_val),
             xy=(ts[-1], final_val),
-            xytext=(-70, 10),
+            xytext=(-70, 25),
             textcoords="offset points",
             fontsize=8,
             color=color,
@@ -980,10 +980,20 @@ def plot_training_stability(outdir, window=50):
 
 def plot_speed_distribution(outdir, last_n=300):
     """
-    Histogram of episode mean speed from the last N episodes of the most
-    recent training run per algorithm (converged phase only, speed >= 20 km/h).
-    Using the most recent single run avoids polluting the distribution with
-    early-training / replay-buffer warmup episodes from other runs.
+    Histogram of episode mean speed from the last N episodes of each
+    algorithm's final-comparison training run(s) (FINAL_COMPARISON_RUNS),
+    converged phase only, speed >= 20 km/h.
+
+    Uses _load_all_training_rows() rather than re-globbing "most recent
+    file" locally -- DDPG/TD3's 150k total is split across two run
+    directories (80k initial + 70k --resume continuation, see
+    FINAL_COMPARISON_RUNS' comment), and the continuation file alone has
+    only 209/174 episodes respectively. Picking just that file as "most
+    recent" would silently drop the initial 80k-step stage and make
+    "last 300 episodes" actually mean "all ~200 episodes of a 70k-step
+    segment" -- an earlier version of this function did exactly that,
+    caught by cross-checking its episode counts against the underlying
+    CSVs directly.
     """
     SPEED_TARGET = 30.0
     MIN_SPEED    = 20.0   # exclude replay-warmup episodes
@@ -992,12 +1002,7 @@ def plot_speed_distribution(outdir, last_n=300):
     has_data = False
 
     for algo in ALGORITHMS:
-        pattern = os.path.join(RESULTS_ROOT, "logs", algo, "*", "episode_log.csv")
-        paths   = sorted(glob.glob(pattern))
-        if not paths:
-            continue
-
-        rows = _read_csv(paths[-1])   # most recent run only
+        rows = _load_all_training_rows(algo)
         if not rows or "mean_speed_kmh" not in rows[0]:
             continue
 
