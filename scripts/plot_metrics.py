@@ -42,6 +42,23 @@ COLORS = {
     "td3":  "#FF9800",   # orange
 }
 
+# The exact training runs behind the equal-budget (150k-step) 4-algorithm
+# comparison documented in docs/THESIS_CONTEXT.md. results/logs/<algo>/ also
+# contains many older run directories (June-August) from before this
+# project's traffic-light/intersection feature existed -- a different
+# observation space and task entirely. Every fresh (non --resume) run's
+# step counter restarts at 0, so globbing "all runs for this algo" and
+# merging by raw timestep would silently interleave that old, incompatible
+# data into the current training curve wherever timestep values collide.
+# DDPG/TD3 list two runs each because their 150k total was reached via
+# `train.py --resume` (80k initial + 70k continuation, same step counter).
+FINAL_COMPARISON_RUNS = {
+    "ppo":  ["ppo_lane_keeping_20260908_183240"],
+    "sac":  ["sac_lane_keeping_20260908_190524"],
+    "ddpg": ["ddpg_lane_keeping_20260908_175251", "ddpg_lane_keeping_20260908_200736"],
+    "td3":  ["td3_lane_keeping_20260908_181222", "td3_lane_keeping_20260908_203207"],
+}
+
 # ── Style ──────────────────────────────────────────────────────────────────────
 
 def apply_style():
@@ -89,12 +106,15 @@ def _rolling_mean(values, window):
 
 def _load_all_training_rows(algo):
     """
-    Return all raw episode CSV rows for the algorithm, merged across runs,
-    sorted by timestep and deduplicated (same logic as generate_metrics.py).
-    Returns None if no CSV files found.
+    Return all raw episode CSV rows for the algorithm's final-comparison runs
+    (FINAL_COMPARISON_RUNS), sorted by timestep and deduplicated (same logic
+    as generate_metrics.py). Returns None if no CSV files found.
     """
-    pattern = os.path.join(RESULTS_ROOT, "logs", algo, "*", "episode_log.csv")
-    paths = sorted(glob.glob(pattern))
+    paths = [
+        os.path.join(RESULTS_ROOT, "logs", algo, run, "episode_log.csv")
+        for run in FINAL_COMPARISON_RUNS.get(algo, [])
+    ]
+    paths = [p for p in paths if os.path.exists(p)]
     if not paths:
         return None
 
@@ -114,16 +134,19 @@ def _load_all_training_rows(algo):
 
 def load_training_data(algo):
     """
-    Return the full training history for the algorithm by merging all
-    episode_log.csv files across all runs, sorted by timestep.
+    Return the training history for the algorithm's final-comparison runs
+    (FINAL_COMPARISON_RUNS), merged and sorted by timestep.
 
-    This shows the complete 0→1M training curve even when training was
-    split across multiple resumed runs.
+    Scoped to those specific runs rather than every run directory ever
+    created for this algorithm -- see FINAL_COMPARISON_RUNS for why. For
+    DDPG/TD3 this still shows the complete curve across their two resumed
+    runs (80k + 70k, same step counter).
     """
-    pattern = os.path.join(
-        RESULTS_ROOT, "logs", algo, "*", "episode_log.csv"
-    )
-    paths = sorted(glob.glob(pattern))
+    paths = [
+        os.path.join(RESULTS_ROOT, "logs", algo, run, "episode_log.csv")
+        for run in FINAL_COMPARISON_RUNS.get(algo, [])
+    ]
+    paths = [p for p in paths if os.path.exists(p)]
     if not paths:
         return None
 
@@ -168,8 +191,17 @@ def load_training_data(algo):
 
 def load_eval_data(algo):
     """
-    Return the most comprehensive evaluate.py CSV (most episodes).
+    Return the most recent evaluate.py CSV for this algorithm.
     Returns None if none exist.
+
+    Picks by filename timestamp (eval_..._YYYYMMDD_HHMMSS.csv sorts
+    chronologically as a plain string), not by episode count — an earlier
+    version picked "whichever file has the most episodes," which silently
+    prefers a stale run over a fresh one whenever the fresh run used fewer
+    episodes (e.g. a quick 10-episode sanity check outranked by a 20- or
+    200-episode run from months earlier, on a completely different task
+    setup) — confirmed as a real risk via live inspection of this
+    project's actual eval_runs/ directories before this fix.
     """
     pattern = os.path.join(
         RESULTS_ROOT, "logs", algo, "eval_runs", "eval_*.csv"
@@ -178,12 +210,8 @@ def load_eval_data(algo):
     if not paths:
         return None
 
-    # Pick the file with the most episodes; break ties by most recent filename
-    best_rows, best_path = [], None
-    for p in sorted(paths):
-        rows = _read_csv(p)
-        if len(rows) >= len(best_rows):
-            best_rows, best_path = rows, p
+    best_path = paths[-1]
+    best_rows = _read_csv(best_path)
 
     if not best_rows:
         return None
@@ -831,7 +859,7 @@ def plot_eval_distributions(outdir):
 
     def _draw_box(ax, values_list, ylabel, title):
         bp = ax.boxplot(
-            values_list, labels=labels, patch_artist=True, widths=0.5,
+            values_list, tick_labels=labels, patch_artist=True, widths=0.5,
             medianprops=dict(color="black", linewidth=2.5),
             flierprops=dict(marker="D", markersize=5, markerfacecolor="#888888",
                             markeredgecolor="#888888"),

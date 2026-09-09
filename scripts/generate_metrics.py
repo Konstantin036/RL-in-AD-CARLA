@@ -26,6 +26,23 @@ RESULTS_ROOT = "results"
 SPEED_TARGET_KMH = 30.0
 SAMPLE_EFF_THRESHOLD = 2500   # reward threshold for "capable policy"
 
+# The exact training runs behind the equal-budget (150k-step) 4-algorithm
+# comparison documented in docs/THESIS_CONTEXT.md. results/logs/<algo>/ also
+# contains many older run directories (June-August) from before this
+# project's traffic-light/intersection feature existed -- a different
+# observation space and task entirely. Every fresh (non --resume) run's
+# step counter restarts at 0, so globbing "all runs for this algo" and
+# merging by raw timestep would silently interleave that old, incompatible
+# data into the current comparison wherever timestep values collide.
+# DDPG/TD3 list two runs each because their 150k total was reached via
+# `train.py --resume` (80k initial + 70k continuation, same step counter).
+FINAL_COMPARISON_RUNS = {
+    "ppo":  ["ppo_lane_keeping_20260908_183240"],
+    "sac":  ["sac_lane_keeping_20260908_190524"],
+    "ddpg": ["ddpg_lane_keeping_20260908_175251", "ddpg_lane_keeping_20260908_200736"],
+    "td3":  ["td3_lane_keeping_20260908_181222", "td3_lane_keeping_20260908_203207"],
+}
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -59,11 +76,15 @@ def _iqm(values):
 
 def _load_all_training_rows(algo):
     """
-    Load and merge all episode_log.csv files for the algorithm across all runs,
-    sorted by timestep. Returns list of row dicts, or None.
+    Load and merge episode_log.csv files for the algorithm's final-comparison
+    runs (FINAL_COMPARISON_RUNS), sorted by timestep. Returns list of row
+    dicts, or None.
     """
-    pattern = os.path.join(RESULTS_ROOT, "logs", algo, "*", "episode_log.csv")
-    paths = sorted(glob.glob(pattern))
+    paths = [
+        os.path.join(RESULTS_ROOT, "logs", algo, run, "episode_log.csv")
+        for run in FINAL_COMPARISON_RUNS.get(algo, [])
+    ]
+    paths = [p for p in paths if os.path.exists(p)]
     if not paths:
         return None
 
@@ -86,19 +107,24 @@ def _load_all_training_rows(algo):
 
 def load_eval_csv(algo):
     """
-    Load the most comprehensive evaluation CSV (most episodes; most recent on tie).
+    Load the most recent evaluation CSV for this algorithm.
     Returns (rows, path) or (None, None).
+
+    Picks by filename timestamp (eval_..._YYYYMMDD_HHMMSS.csv sorts
+    chronologically as a plain string), not by episode count. An earlier
+    version picked "whichever file has the most episodes" — that silently
+    prefers a stale run over a fresh one whenever the fresh run used fewer
+    episodes (e.g. a quick 10-episode sanity check outranked by a 20- or
+    200-episode run from months earlier, on a completely different task
+    setup) — confirmed as a real risk via live inspection of this
+    project's actual eval_runs/ directories before this fix.
     """
     pattern = os.path.join(RESULTS_ROOT, "logs", algo, "eval_runs", "eval_*.csv")
     paths = sorted(glob.glob(pattern))
     if not paths:
         return None, None
-    best_path, best_rows = None, []
-    for p in sorted(paths):
-        rows = _read_csv(p)
-        if len(rows) >= len(best_rows):
-            best_rows, best_path = rows, p
-    return best_rows, best_path
+    latest_path = paths[-1]
+    return _read_csv(latest_path), latest_path
 
 
 def load_training_log(algo, window):

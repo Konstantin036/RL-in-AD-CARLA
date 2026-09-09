@@ -1,0 +1,5 @@
+algorithm,training_steps,data_source,n_episodes,mean_reward,std_reward,iqm_reward,min_reward,max_reward,mean_lateral_m,max_lateral_m,mean_speed_kmh,std_speed_kmh,speed_deviation,speed_adherence,mean_smoothness,success_rate_pct,mean_episode_length,sample_eff_step,destination_reached,timeout,collision,off_road,wrong_heading,stall,red_light_violation
+ppo,151485,evaluation,10,617.8741,420.5525,431.9746,177.9680,1278.5706,0.874219,1.120261,19.4435,6.2992,10.5565,0.6481,0.5656,10.00,224.6,,1,0,2,0,0,0,7
+sac,149430,evaluation,10,1784.5960,973.8555,1521.8194,441.9025,3152.2377,0.562391,1.051260,19.7392,7.6823,10.2608,0.6580,0.8518,40.00,512.0,40097,4,0,0,0,0,0,6
+ddpg,149814,evaluation,10,1304.6444,1051.8533,881.3157,60.4550,3262.5671,1.757783,2.368660,23.1128,8.0153,6.8872,0.7704,0.8275,30.00,424.4,,3,0,4,0,0,1,2
+td3,149561,evaluation,10,2613.6152,1066.6582,2599.7378,817.8672,3894.1109,0.557200,2.112478,12.9400,6.6191,17.0600,0.4313,0.8659,30.00,823.1,,3,5,2,0,0,0,0
