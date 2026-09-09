@@ -557,6 +557,32 @@ environment/setup section:
   vehicle approaching an intersection, sunset lighting — the most
   cinematic of the set, good as a section-opening or cover image.
 
+### 5.7 Trajectory-vs-route figures (path deviation, not just aggregate stats)
+
+`scripts/plot_trajectory.py` drives live episodes with the SAC checkpoint
+(inference only -- no training/checkpoint changes) and plots the
+vehicle's actual (x, y) path against the planned route, colored by
+lateral deviation, in `results/plots/`:
+
+- `trajectory_success_example.png` / `_3d.png` — a genuine
+  `destination_reached` episode (436 steps, long route with a real
+  curve). Mostly low deviation (green) with one brief spike to ~1.5m
+  through the sharpest part of the curve, then recovers and completes
+  cleanly -- a good "how well it actually tracks" figure, imperfections
+  included rather than hidden.
+- `trajectory_failure_example.png` / `_3d.png` — a genuine failure
+  (`off_road`, terminated at step 33) — pairs honestly with the success
+  case rather than only showing the best outcome. Both plots' color
+  scale runs 0-1.5m lateral distance for a fair side-by-side comparison.
+- The `_3d.png` variants plot the same path with simulation step as a
+  third axis (not a bar/surface chart -- those are hard to read
+  accurately due to occlusion; a single 3D line avoids that problem)
+  with the planned route shown as a flat reference on the ground plane.
+
+Because SAC's real success rate is ~40% (§5's table), the script tries
+up to `MAX_EPISODES=6` fresh episodes looking for one genuine success
+and one genuine failure rather than cherry-picking a single lucky run.
+
 ## 8. How these results compare to published CARLA RL literature (2026-09-09 research pass)
 
 This section exists to answer one question honestly: **are this
