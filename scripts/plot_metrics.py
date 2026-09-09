@@ -575,13 +575,16 @@ def plot_termination_breakdown(outdir, window=20):
     ax.set_title("Episode Termination Breakdown — CARLA Lane Keeping RL",
                  fontsize=12, fontweight="bold")
 
+    # Bars span the full 0-1 width, so any "inside the axes" location
+    # (e.g. the previous "center right") sits on top of a bar -- moved
+    # below the chart instead, spread across columns so it stays legible.
     patches = [
         mpatches.Patch(color=reason_colors[r], label=r.replace("_", " ").title())
         for r in reason_order
     ]
-    ax.legend(handles=patches, loc="center right", fontsize=7,
-              handlelength=1.0, handleheight=0.8,
-              borderpad=0.4, labelspacing=0.3, handletextpad=0.4)
+    ax.legend(handles=patches, loc="upper center", bbox_to_anchor=(0.5, -0.18),
+              ncol=4, fontsize=8, handlelength=1.2, handleheight=0.8,
+              borderpad=0.4, labelspacing=0.3, handletextpad=0.4, columnspacing=1.2)
 
     # Source annotation per algorithm
     for y, algo in zip(y_positions, algos):
