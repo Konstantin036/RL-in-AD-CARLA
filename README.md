@@ -1,18 +1,18 @@
 # Reinforcement Learning for Autonomous Driving in CARLA
 
-**Lane keeping, route following, and traffic-light compliance at signalized intersections — a comparative study of PPO, SAC, DDPG, and TD3.**
+**Lane keeping, route following, and traffic-light compliance at signalized intersections. A comparative study of PPO, SAC, DDPG, and TD3.**
 
-This is the practical implementation behind my diploma thesis on reinforcement learning for autonomous vehicle control. A simulated car learns to follow an arbitrary planned route through an urban road network, stay in its lane, and stop for red lights, using nothing but a reward signal and a low-dimensional state vector — no hand-coded driving rules. Four RL algorithms are trained under the same conditions and compared head-to-head.
+This is the practical implementation behind my diploma thesis on reinforcement learning for autonomous vehicle control. A simulated car learns to follow an arbitrary planned route through an urban road network, stay in its lane, and stop for red lights, using nothing but a reward signal and a low-dimensional state vector, with no hand-coded driving rules. Four RL algorithms are trained under the same conditions and compared head-to-head.
 
 ---
 
 ## 1. Problem and scope
 
-Pure lane keeping — staying centered on a straight or gently curving road — is a well-covered RL benchmark at this point. What made this project harder was pushing it into two areas that most lane-keeping papers skip: driving through actual signalized intersections along a planned route, and treating traffic-light compliance as part of the task itself rather than something bolted on afterward.
+Pure lane keeping, staying centered on a straight or gently curving road, is a well-covered RL benchmark at this point. What made this project harder was pushing it into two areas that most lane-keeping papers skip: driving through actual signalized intersections along a planned route, and treating traffic-light compliance as part of the task itself rather than something bolted on afterward.
 
 Both of these run into the same underlying problem. "Stay near the road" stops being well-defined at a junction, because several lanes belonging to crossing or turning paths are all physically close to the car at once. The only thing that tells you which one actually matters is the route planned for that specific episode.
 
-The agent drives in [CARLA](https://carla.org) 0.9.15's `Town10HD_Opt` map — a mixed urban area with real intersections, traffic lights, and multi-lane roads.
+The agent drives in [CARLA](https://carla.org) 0.9.15's `Town10HD_Opt` map, a mixed urban area with real intersections, traffic lights, and multi-lane roads.
 
 ## 2. System architecture
 
@@ -30,9 +30,9 @@ Lateral distance and heading error are measured against the closest point **on t
 
 ### 2.2 Route planning and traffic-light compliance
 
-Each episode plans a route between a randomly chosen start and destination using CARLA's road-topology graph (`GlobalRoutePlanner`, A* under the hood). Tracking progress along that route every step turned out to be less trivial than it sounds — a naive "closest waypoint" search will happily snap onto a spatially closer point on a completely different street if the grid is dense enough. The tracker used here walks forward from the last known position instead, tolerates a bit of backward drift (rolling back slightly on an incline, for instance), and never jumps ahead to an out-of-sequence point no matter how close it is.
+Each episode plans a route between a randomly chosen start and destination using CARLA's road-topology graph (`GlobalRoutePlanner`, A* under the hood). Tracking progress along that route every step turned out to be less trivial than it sounds: a naive "closest waypoint" search will happily snap onto a spatially closer point on a completely different street if the grid is dense enough. The tracker used here walks forward from the last known position instead, tolerates a bit of backward drift (rolling back slightly on an incline, for instance), and never jumps ahead to an out-of-sequence point no matter how close it is.
 
-Traffic-light state comes straight from CARLA's ground truth. A violation is only flagged the moment the car exits a light's trigger zone while still moving above a small speed threshold — not for the whole time a light is red, which would end up punishing normal braking distance and legitimate waiting along with actual violations.
+Traffic-light state comes straight from CARLA's ground truth. A violation is only flagged the moment the car exits a light's trigger zone while still moving above a small speed threshold, not for the whole time a light is red, which would end up punishing normal braking distance and legitimate waiting along with actual violations.
 
 ### 2.3 Reward function
 
@@ -47,11 +47,11 @@ r = w_center   · (1 − |lateral| / max_lateral)
   + r_terminal + r_step
 ```
 
-Five shaped terms — centering, a Gaussian speed target peaking at 30 km/h, heading alignment, action smoothness, and forward progress — plus a small per-step cost and a terminal penalty that only applies on failure, never on a timeout or a successful route completion. The progress term was added late, after noticing that the Gaussian speed reward alone still gives a small non-zero reward at zero speed. DDPG and TD3 both found and exploited that: standing still while collecting centering and smoothness reward turned out to be a viable local optimum for a deterministic policy. The progress term is exactly zero at zero speed, so that trick stops working.
+Five shaped terms (centering, a Gaussian speed target peaking at 30 km/h, heading alignment, action smoothness, and forward progress) plus a small per-step cost and a terminal penalty that only applies on failure, never on a timeout or a successful route completion. The progress term was added late, after noticing that the Gaussian speed reward alone still gives a small non-zero reward at zero speed. DDPG and TD3 both found and exploited that: standing still while collecting centering and smoothness reward turned out to be a viable local optimum for a deterministic policy. The progress term is exactly zero at zero speed, so that trick stops working.
 
 ### 2.4 Termination conditions
 
-Checked in priority order — stall, collision, red-light violation, off-road, wrong heading, destination reached, timeout — so a real failure always wins over a coincidental success on the same step, and a car properly stopped at a red light never gets mistaken for a stalled one. The off-road threshold also scales with how many same-direction lanes the current road actually has, pulled from CARLA's own lane topology. Without that, drifting into the next lane over on a wide multi-lane road (very common right around intersections, where turn lanes widen things) got penalized exactly like leaving the road entirely, which didn't make sense.
+Checked in priority order (stall, collision, red-light violation, off-road, wrong heading, destination reached, timeout), so a real failure always wins over a coincidental success on the same step, and a car properly stopped at a red light never gets mistaken for a stalled one. The off-road threshold also scales with how many same-direction lanes the current road actually has, pulled from CARLA's own lane topology. Without that, drifting into the next lane over on a wide multi-lane road (very common right around intersections, where turn lanes widen things) got penalized exactly like leaving the road entirely, which didn't make sense.
 
 ### 2.5 Algorithms compared
 
@@ -64,11 +64,11 @@ Four continuous-control algorithms from Stable-Baselines3, all trained against t
 | DDPG | Off-policy, deterministic | Ornstein–Uhlenbeck action noise |
 | TD3 | Off-policy, deterministic | OU noise + clipped double-Q, target smoothing |
 
-DDPG and TD3 needed both the progress reward term above and a longer random-exploration warm-up before training starts — otherwise they settle into the standing-still optimum their noise-based exploration doesn't naturally push them out of.
+DDPG and TD3 needed both the progress reward term above and a longer random-exploration warm-up before training starts. Otherwise they settle into the standing-still optimum their noise-based exploration doesn't naturally push them out of.
 
 ## 3. Results
 
-All four algorithms trained on an **equal 150,000-step budget** and were evaluated the same way afterward: 10 deterministic episodes per checkpoint. It's an intermediate result — the project's config specifies 500,000 steps as the real target (§5) — but the comparison between algorithms is fair, since all four saw the same number of environment interactions.
+All four algorithms trained on an **equal 150,000-step budget** and were evaluated the same way afterward: 10 deterministic episodes per checkpoint. It's an intermediate result (the project's config specifies 500,000 steps as the real target, see §5), but the comparison between algorithms is fair, since all four saw the same number of environment interactions.
 
 | Algorithm | Mean episode reward | Mean lateral distance | Success rate | Mean episode length |
 |---|---|---|---|---|
@@ -79,40 +79,40 @@ All four algorithms trained on an **equal 150,000-step budget** and were evaluat
 
 There isn't one clean winner here, and I think the results actually make more sense split into two questions instead of one ranking.
 
-**Which algorithm gets to a decent policy fastest?** Looking at the training step where a 20-episode rolling-mean reward first crosses a "capable policy" threshold of 2,500: only SAC gets there within the 150k budget, at step 40,097 — about a quarter of the way in. PPO, DDPG, and TD3 never sustain that level in the same budget.
+**Which algorithm gets to a decent policy fastest?** Looking at the training step where a 20-episode rolling-mean reward first crosses a "capable policy" threshold of 2,500: only SAC gets there within the 150k budget, at step 40,097, about a quarter of the way in. PPO, DDPG, and TD3 never sustain that level in the same budget.
 
-**Which algorithm's final policy can actually be trusted?** By success rate, reward variance, and worst-case lateral distance together: SAC comes out both fastest to train and most reliable once trained. TD3 has the best mean reward and by far the longest episodes, but also the most variance run to run and a worse worst-case lateral excursion — it drives brilliantly sometimes and less safely at other times. DDPG is the weakest on control precision specifically, worst on both mean and worst-case lateral distance. PPO is the odd one out: lowest success rate of the four, but the tightest worst-case lateral control when it does fail. Its failures are mostly a rule-compliance problem — driving through red lights — not a loss of control, which is a fairly different kind of mistake than what the other three make.
+**Which algorithm's final policy can actually be trusted?** By success rate, reward variance, and worst-case lateral distance together: SAC comes out both fastest to train and most reliable once trained. TD3 has the best mean reward and by far the longest episodes, but also the most variance run to run and a worse worst-case lateral excursion: it drives brilliantly sometimes and less safely at other times. DDPG is the weakest on control precision specifically, worst on both mean and worst-case lateral distance. PPO is the odd one out: lowest success rate of the four, but the tightest worst-case lateral control when it does fail. Its failures are mostly a rule-compliance problem (driving through red lights), not a loss of control, which is a fairly different kind of mistake than what the other three make.
 
 ### 3.1 Comparison with published literature
 
-There's a comparative study covering these same four algorithms (plus TQC and CrossQ) on CARLA driving tasks, trained for 1,000,000 steps — about 6.7x the budget used here. It finds the same relative ordering: SAC/TQC (off-policy, stochastic) get the best sample efficiency and task completion, DDPG is the weakest, and PPO shows visibly noisy training-reward trends tied to its lack of a replay buffer. All three of those show up independently in this project's own results and training curves. The absolute success rates here (10–40%) land below that study's (23–91% route completion), and further below affordance-based systems that report up to 100% on simpler benchmarks — which tracks, given the much smaller training budget and a compact 5D state instead of richer learned-affordance or sensor input. It's a gap in scale, not a different approach.
+There's a comparative study covering these same four algorithms (plus TQC and CrossQ) on CARLA driving tasks, trained for 1,000,000 steps, about 6.7x the budget used here. It finds the same relative ordering: SAC/TQC (off-policy, stochastic) get the best sample efficiency and task completion, DDPG is the weakest, and PPO shows visibly noisy training-reward trends tied to its lack of a replay buffer. All three of those show up independently in this project's own results and training curves. The absolute success rates here (10–40%) land below that study's (23–91% route completion), and further below affordance-based systems that report up to 100% on simpler benchmarks, which tracks given the much smaller training budget and a compact 5D state instead of richer learned-affordance or sensor input. It's a gap in scale, not a different approach.
 
 ## 4. Figures
 
-**Training curves — episode reward vs. environment steps, per algorithm:**
+**Training curves: episode reward vs. environment steps, per algorithm.**
 
 ![Training curves](results/plots/training_curves.png)
 
-**Head-to-head comparison — reward, success rate, lateral precision:**
+**Head-to-head comparison: reward, success rate, lateral precision.**
 
 ![Comparison bars](results/plots/comparison_bars.png)
 
-**Multi-metric comparison across six normalized performance dimensions:**
+**Multi-metric comparison across six normalized performance dimensions.**
 
 ![Radar chart](results/plots/radar_chart.png)
 
-**Termination-reason breakdown per algorithm's evaluation episodes:**
+**Termination-reason breakdown per algorithm's evaluation episodes.**
 
 ![Termination breakdown](results/plots/termination_breakdown.png)
 
-**Sample efficiency — training step at which each algorithm first sustains a capable-policy reward level:**
+**Sample efficiency: training step at which each algorithm first sustains a capable-policy reward level.**
 
 ![Sample efficiency](results/plots/sample_efficiency.png)
 
-**Driven path vs. planned route.** An SAC policy's actual trajectory, colored by lateral deviation, against the planned route — one genuine success and one genuine failure:
+**Driven path vs. planned route.** An SAC policy's actual trajectory, colored by lateral deviation, against the planned route, for one genuine success and one genuine failure:
 
-![Trajectory — success](results/plots/trajectory_success_example.png)
-![Trajectory — failure](results/plots/trajectory_failure_example.png)
+![Trajectory (success)](results/plots/trajectory_success_example.png)
+![Trajectory (failure)](results/plots/trajectory_failure_example.png)
 
 **The simulation environment**, Town10HD_Opt, with an SAC policy actually driving:
 
@@ -120,11 +120,11 @@ There's a comparative study covering these same four algorithms (plus TQC and Cr
 ![Route following](results/screenshots/02_route_lane_keeping.png)
 ![Intersection with an active red light](results/screenshots/03_intersection_redlight.png)
 
-More figures — lateral-centering progress, evaluation score distributions, training stability, speed distribution, 3D trajectory views, additional environment screenshots — are sitting in `results/plots/` and `results/screenshots/`.
+More figures (lateral-centering progress, evaluation score distributions, training stability, speed distribution, 3D trajectory views, additional environment screenshots) are sitting in `results/plots/` and `results/screenshots/`.
 
 ## 5. Limitations and future work
 
-The 150k-step comparison above is real and fair, but it's still short of the 500,000-step budget the config specifies as the intended final run length — whether to push all four algorithms to that budget before locking in thesis numbers is still an open question. Traffic-light compliance currently reads CARLA's ground-truth signal state rather than detecting it visually; both the traffic-light reader and the route planner sit behind a single call site each, specifically so either one can be swapped for a perception-based version later without touching the reward, observation, or termination code around them. Stop-sign compliance, camera/lidar observation, and a discrete-action variant for DQN are all designed for in the same modular shape, just not built yet.
+The 150k-step comparison above is real and fair, but it's still short of the 500,000-step budget the config specifies as the intended final run length. Whether to push all four algorithms to that budget before locking in thesis numbers is still an open question. Traffic-light compliance currently reads CARLA's ground-truth signal state rather than detecting it visually; both the traffic-light reader and the route planner sit behind a single call site each, specifically so either one can be swapped for a perception-based version later without touching the reward, observation, or termination code around them. Stop-sign compliance, camera/lidar observation, and a discrete-action variant for DQN are all designed for in the same modular shape, just not built yet.
 
 ## 6. Technical details
 
