@@ -449,9 +449,17 @@ These phases are planned but not implemented:
 ## Thesis context
 
 - Student: Konstantin (rtrk)
-- Topic: Reinforcement learning for autonomous vehicle lane keeping
+- Topic: Reinforcement learning for autonomous vehicle lane keeping,
+  route following, and traffic-light compliance at intersections
 - Simulator: CARLA 0.9.15
-- Algorithm: PPO with MlpPolicy (4D obs → 64×64 → 2D action)
-- Task: Lane keeping on Town04 highway
+- Algorithms compared: PPO, SAC, DDPG, TD3 (5D obs → 2D action)
+- Task: Route-following and intersection navigation on Town10HD_Opt,
+  including traffic-light compliance
 - Evaluation metrics: mean episode reward, mean lateral distance,
-  episode length distribution, termination reason breakdown
+  success rate, episode length distribution, termination reason
+  breakdown
+- Practical implementation is complete — see `docs/THESIS_CONTEXT.md`
+  for the full picture (architecture, exact reward/termination
+  formulas, results, comparison with literature) and `README.md` for
+  the reader-facing overview. Work from here is thesis writing, not
+  further implementation.
