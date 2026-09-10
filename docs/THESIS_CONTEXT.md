@@ -529,10 +529,11 @@ and that distinction is itself a legitimate finding, not a hedge.
 
 ### 5.6 Environment screenshots (for reader familiarization)
 
-`results/screenshots/` (generated locally via `scripts/capture_screenshots.py`,
-not committed to git — large binaries, regenerate on demand) holds 4
-curated images of the live CARLA environment, captured with a trained
-SAC policy actually driving (not random actions), for the thesis's
+`results/screenshots/` (generated via `scripts/capture_screenshots.py`,
+committed to git as of 2026-09-10 — readable directly from GitHub, no
+CARLA access needed) holds 7 curated images of the live CARLA
+environment, captured with a trained SAC policy actually driving (not
+random actions), for the thesis's
 environment/setup section:
 
 - `01_map_overview.png` — top-down establishing shot of Town10HD_Opt's
