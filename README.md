@@ -4,9 +4,10 @@
 
 This is the practical implementation behind my diploma thesis on reinforcement learning for autonomous vehicle control. A simulated car learns to follow an arbitrary planned route through an urban road network, stay in its lane, and stop for red lights, using nothing but a reward signal and a low-dimensional state vector, with no hand-coded driving rules. Four RL algorithms are trained under the same conditions and compared head-to-head.
 
-![Driving demo](results/screenshots/08_driving_demo.gif)
-
-*Screen recording of the agent navigating Town10HD_Opt, following the route line drawn for debugging, through curves and an intersection.*
+| During training | During evaluation |
+|---|---|
+| ![Training demo](results/screenshots/08_driving_demo.gif) | ![Evaluation demo](results/screenshots/09_evaluation_demo.gif) |
+| The policy still sampling exploratory actions, visible as extra weaving on top of the intended path. | The same kind of drive with a converged, deterministic policy: smooth, closely centered, no exploration noise. |
 
 ---
 
