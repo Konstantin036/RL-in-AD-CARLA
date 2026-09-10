@@ -66,6 +66,24 @@ item here is implemented and verified (§5), not aspirational:
   screenshots directly from a live checkpoint driving in CARLA (§5.6,
   §5.7) — not mockups, real driving output.
 
+### 1.2 Tech stack (exact versions, for the methodology/implementation chapter)
+
+| Component | Library / Tool | Version |
+|---|---|---|
+| Simulator | CARLA | 0.9.15 |
+| RL library | Stable-Baselines3 | 2.0.0 |
+| Gym interface | Gymnasium | 0.28.1 |
+| Neural network backend | PyTorch | 1.13.1 |
+| Language | CPython | 3.7.16 |
+| OS | Ubuntu | 22.04 |
+
+Python 3.7 specifically because that's what CARLA 0.9.15's Python API
+egg requires — not a project preference, a hard external constraint
+worth noting if the thesis discusses tooling choices. All four
+algorithms (PPO, SAC, DDPG, TD3) come from the same Stable-Baselines3
+installation via the registry in §2/§9 — no per-algorithm library
+version differences.
+
 ## 2. Architecture (module-by-module)
 
 The codebase is deliberately modular — each file has one responsibility,
@@ -203,9 +221,64 @@ with current weights: `w_center=1.0`, `w_speed=1.5`, `w_heading=0.5`,
 `w_smooth=0.5`, `w_progress=1.0`, `step_penalty` (`r_step`, added every
 step unconditionally) `=-0.1`, `terminal_penalty=-10.0`.
 
-Component formulas already in the codebase (centering, speed, heading —
-not repeated here since they predate this note) plus the two the thesis
-text doesn't cover yet:
+**Note on the three base terms below**: an earlier version of this note
+skipped these, since at the time the thesis text already covered them
+elsewhere and only the two new terms (smoothness, progress) needed
+documenting here. Added now that this file needs to be fully
+self-contained (the writing session no longer has codebase access) —
+if the thesis draft already has equivalent formulas written some other
+way, cross-check against these exact ones rather than assuming a
+mismatch is an error on either side.
+
+**Centering term** — `r_centering = compute_centering_reward(lateral_distance_m, max_lateral_m)`:
+
+```
+r_centering = max(0, 1 - |lateral_distance_m| / max_lateral_m)
+```
+
+Range `[0, 1]`; peak `1.0` when perfectly centered (`lateral_distance_m
+= 0`); `0.0` at or beyond the lane edge (`|lateral_distance_m| >=
+max_lateral_m`, base value 3.5 m — see §3.5's off-road note for why
+this is deliberately the *base*, un-widened value even on multi-lane
+roads). Linear, not quadratic, specifically so the gradient toward the
+centerline is constant regardless of current offset — a quadratic
+formulation would make small errors feel nearly identical near the
+centerline and only start penalizing meaningfully once already far
+off, which slows learning right where correction matters early.
+
+**Speed term** — `r_speed = compute_speed_reward(speed_kmh, target_speed_kmh, sigma)`:
+
+```
+r_speed = exp(-((speed_kmh - target_speed_kmh)^2) / (2 * sigma^2))
+```
+
+Range `(0, 1]`; Gaussian bell peaking at `1.0` when `speed_kmh ==
+target_speed_kmh` (currently **30 km/h**), with `sigma` (currently
+**10 km/h**) controlling the width — e.g. `>0.6` reward anywhere in
+roughly `[20, 40]` km/h, a comfortable operating band rather than a
+knife-edge target. Gaussian rather than linear specifically so
+over-speed and under-speed are penalized symmetrically while still
+giving smooth, non-zero gradient information even fairly far from the
+target (this is also *why* the progress term needed to exist
+separately — the Gaussian's smooth falloff never reaches exactly zero
+at `speed=0`, which is what let DDPG/TD3 exploit standing still; see
+the progress term's note below).
+
+**Heading term** — `r_heading = compute_heading_reward(heading_error_rad)`:
+
+```
+r_heading = max(0, 1 - |heading_error_rad| / pi)
+```
+
+Range `[0, 1]`; peak `1.0` when perfectly aligned with the road
+direction (`heading_error_rad = 0`); `0.0` when pointing exactly
+backwards (`|heading_error_rad| = pi`). Included as a term separate
+from centering because a vehicle can be laterally perfectly centered
+while pointing sideways — it will leave the lane on the very next tick
+regardless of what its current lateral position says, so heading gives
+an earlier correction signal than centering alone would.
+
+Now the two the thesis text didn't cover before this file was written:
 
 **Smoothness term** — `r_smoothness = compute_smoothness_reward(action_delta)`:
 
@@ -950,14 +1023,25 @@ def _build_kwargs(algo_name, algo_cfg, action_space):
 
 ## Changelog (most recent first)
 
-- **2026-09-10**: Fixed a structural bug in this file itself — §5.6/§5.7
+- **2026-09-10 (final handoff pass)**: Committed and pushed
+  `results/plots/` and `results/screenshots/` to git (previously
+  gitignored/local-only) so they're readable from GitHub without this
+  machine — practical implementation work is finished as of this date;
+  everything from here is writing, done independently. Filled two real
+  gaps found while double-checking this file was actually
+  self-contained: §3.5 previously only gave exact formulas for the
+  smoothness/progress terms and assumed the centering/speed/heading
+  formulas were "already covered elsewhere" (true when this file
+  assumed continued codebase access — no longer true now) — added
+  those three exact formulas. Added §1.2 (exact tech-stack versions),
+  previously only in `CLAUDE.md`, a file written for a coding
+  assistant, not obviously something the writing session would think
+  to check. Also fixed a structural bug in this file itself — §5.6/§5.7
   had been accidentally inserted after §7 instead of after §5.5 (still
   readable, just out of logical order). Added §1.1 (system capabilities
   summary), §9 (extensibility/how-to-add-a-module reference table), and
   §10 (real, current code excerpts for the pieces most worth quoting
-  directly in the methodology chapter) — all requested so the
-  Overleaf-writing session has the same depth of context as this one,
-  without needing repo access itself.
+  directly in the methodology chapter).
 - **2026-09-09**: Added §5.8 (data-integrity audit — 5 real bugs found
   and fixed across the metrics/plotting pipeline, see that section for
   the full list), §5.6/§5.7 (screenshots, trajectory-vs-route figures),
