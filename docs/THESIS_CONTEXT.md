@@ -6,7 +6,9 @@ needing to read the whole codebase. It is kept up to date as the project
 progresses — check the "Status as of" date at the top before relying on
 anything here as current.
 
-**Status as of: 2026-09-08** (updated same day as written)
+**Status as of: 2026-09-10** — see the changelog at the very bottom of
+this file for what changed on each date. Read that before assuming
+anything here (especially §5's numbers) is still current.
 
 ---
 
@@ -21,6 +23,48 @@ intersections. Four algorithms are supported via a pluggable registry:
 **not** supported — it requires discrete actions, and this project's
 action space is continuous 2D control (acceleration, steer). That's a
 documented design choice, not a gap.
+
+### 1.1 System capabilities — what it can actually do, end to end
+
+Useful as a self-contained list for an abstract or introduction. Every
+item here is implemented and verified (§5), not aspirational:
+
+- Connects to a running CARLA 0.9.15 server and drives a real vehicle
+  actor in synchronous, fixed-timestep physics (20 Hz) — not a
+  simplified kinematic simulation.
+- Given any two points in Town10HD_Opt's road network, plans a legal
+  route between them (CARLA's `GlobalRoutePlanner`, A* over the road
+  topology graph) and tracks the vehicle's progress along it every
+  step, correctly disambiguating direction inside junctions where
+  several physically-close lanes are not the one the route intends —
+  the specific problem that makes naive nearest-lane tracking fail at
+  intersections (§4).
+- Reads ground-truth traffic-light state from CARLA and enforces
+  stop-on-red compliance as a first-class part of the reward/
+  termination logic (not just an observation the agent could ignore) —
+  distinguishes correctly stopping-and-waiting from driving through,
+  and from normal braking distance while still approaching a light
+  (§2, `traffic_rules.py`).
+- Trains a policy with any of 4 different RL algorithms (PPO, SAC,
+  DDPG, TD3) against this environment via one shared training script
+  (`agent/train.py`), with per-algorithm hyperparameters isolated in
+  one config file, and can resume a stopped/interrupted training run
+  from its last checkpoint without restarting the step counter.
+- Evaluates a trained checkpoint deterministically over N episodes and
+  reports mean/std reward, mean lateral distance, success rate, and a
+  full termination-reason breakdown (`agent/evaluate.py`).
+- Generates a full set of comparison tables and publication-style
+  figures (9 plots + a summary CSV) across all 4 algorithms from raw
+  training/eval logs, with no manual data wrangling
+  (`scripts/generate_metrics.py`, `scripts/plot_metrics.py`).
+- Widens its own off-road tolerance automatically based on how many
+  real same-direction lanes the current road segment has (§3, point 4)
+  — a two-lane one-way road doesn't terminate the episode the instant
+  the agent drifts into the next lane over.
+- Produces path-deviation visualizations (actual driven path vs.
+  planned route, in 2D and literal 3D) and curated environment
+  screenshots directly from a live checkpoint driving in CARLA (§5.6,
+  §5.7) — not mockups, real driving output.
 
 ## 2. Architecture (module-by-module)
 
@@ -483,50 +527,6 @@ table first, then this two-axis breakdown as the deeper analysis —
 most trustworthy" are different questions with different answers here,
 and that distinction is itself a legitimate finding, not a hedge.
 
-## 6. Honest current limitations (do not oversell)
-
-- **All four algorithms now have a complete, equal-budget (150,000 step)
-  training run with a full evaluation pass** (see §5's table) — this
-  limitation is resolved as of 2026-09-08 evening. The remaining gap is
-  that 150k steps is still well short of the full 500,000-step runs
-  `configs/config.yaml` specifies as the intended final length.
-- The hand-coded baseline controller (not any RL agent) visibly fails at
-  intersections/curves during manual observation — an **expected,
-  already-understood limitation of that specific crude controller** (a
-  fixed-gain P-controller has no lookahead/anticipation of an upcoming
-  turn, and no smoothness optimization at all), not evidence of a bug in
-  the environment or route logic. A trained RL policy has structural
-  reasons to do better: it can learn anticipatory behavior from
-  experience (which a fixed-gain controller cannot by construction), and
-  the reward function explicitly penalizes jerky/large action changes
-  (`w_smooth`) — the baseline optimizes for neither.
-- Town03 (the originally intended intersection map) crashes this
-  machine's CARLA install on load — an engine/GPU-driver issue, not a
-  codebase bug. Town10HD_Opt is the working substitute (also has real
-  intersections and traffic lights).
-- Stop-sign detection is explicitly out of scope for the current pass —
-  `traffic_rules.py` is structured so a sibling
-  `get_stop_sign_affordance()`/`StopSignViolationDetector` pair could be
-  added later in the same shape, but it hasn't been built.
-- Camera/lidar sensors (a higher-dimensional observation extension) and
-  a discretized-action variant for DQN are both documented as
-  planned-but-not-built extensions, consistent with keeping the current
-  thesis submission scoped to what's actually finished.
-
-## 7. Possible future work (if the thesis wants this section)
-
-- Full 500k-step training runs across all 4 algorithms for final,
-  citable comparative results.
-- Stop-sign detection (designed-for, not built).
-- Vision-based traffic-light/lane detection replacing the current
-  ground-truth reads (the architecture already isolates this behind one
-  call site specifically for this swap).
-- Fixing the Town03 crash to use the originally intended, richer
-  intersection map.
-- A stronger baseline controller (e.g. pure-pursuit with lookahead) for
-  a more meaningful RL-vs-baseline comparison, since the current one is
-  intentionally too crude to be a fair comparison point.
-
 ### 5.6 Environment screenshots (for reader familiarization)
 
 `results/screenshots/` (generated locally via `scripts/capture_screenshots.py`,
@@ -582,6 +582,104 @@ lateral deviation, in `results/plots/`:
 Because SAC's real success rate is ~40% (§5's table), the script tries
 up to `MAX_EPISODES=6` fresh episodes looking for one genuine success
 and one genuine failure rather than cherry-picking a single lucky run.
+
+### 5.8 Data-integrity audit (2026-09-09) — read this before citing any figure
+
+Before generating final figures, every data-loading path in
+`scripts/generate_metrics.py` and `scripts/plot_metrics.py` was audited
+end-to-end (prompted by a direct question: "is any of this actually
+reliable?"). Five real bugs were found and fixed, not just cosmetic
+issues — worth knowing about because they explain why some numbers
+shifted slightly between early and final versions of the same figure,
+and because the pattern (see the third bullet) is the kind of subtle,
+non-crashing correctness bug worth discussing in a methodology/testing
+section:
+
+1. **Stale eval-CSV selection.** `load_eval_csv()`/`load_eval_data()`
+   picked "whichever CSV file has the most episodes" rather than the
+   most recent one. `results/logs/*/eval_runs/` holds old evaluation
+   runs (one with 200 episodes) from months before the traffic-light
+   feature existed — the old logic would have silently preferred a
+   200-episode stale run over a fresh 10-episode one. Fixed to pick by
+   filename timestamp.
+2. **Old/new training-run mixing.** The training-curve loaders globbed
+   *every* run directory ever created per algorithm (some going back to
+   June, on a 4D pre-traffic-light observation space) and merged them
+   by raw timestep. Since every fresh run's step counter restarts at 0,
+   old and new runs' timesteps collide, risking incompatible data
+   silently interleaved into one curve. Fixed by introducing
+   `FINAL_COMPARISON_RUNS`, an explicit whitelist of the exact run
+   directories behind the 150k-step comparison in §5's table.
+3. **Radar chart reference-range miscalibration** — the most serious of
+   the five, because it produced a plausible-looking chart with no
+   error, just wrong information. `plot_radar_chart()`'s domain
+   reference ranges (e.g. reward `[2500,3500]`) were calibrated for a
+   fully-converged model. At this project's actual 150k-step values
+   (reward 618–2614), 3 of 6 axes clipped to exactly 0.0 for *every*
+   algorithm — e.g. PPO's 618 and TD3's 2614 reward, a real 4x
+   difference, both rendered as an identical flat zero. Recalibrated to
+   this project's actual achieved spread.
+4. **`plot_speed_distribution()` re-implemented its own "most recent
+   run" glob** instead of using the already-fixed loaders. It happened
+   to pick the right directory by alphabetical luck, but for DDPG/TD3
+   (whose 150k total spans two run directories) it silently read only
+   the second, dropping the first 80k steps entirely — confirmed via
+   episode counts (209/174 episodes in the continuation-only files,
+   both under the requested "last 300"). Fixed to use the properly
+   merged loader; TD3's plotted sample size corrected from n=84 to n=147.
+5. Two "Final: X" annotation labels rendering on top of their own plot
+   line (`training_curves.png`, `lateral_progress.png`) — cosmetic, fixed.
+
+After all five fixes, `results/metrics_comparison.csv` was regenerated
+and diffed byte-for-byte against the pre-fix version: **identical** —
+confirming the underlying summary table was already correct and only
+the *visualizations* built on top of it had these bugs. Every figure in
+`results/plots/` was regenerated after the fixes and is current as of
+this section's date.
+
+## 6. Honest current limitations (do not oversell)
+
+- **All four algorithms now have a complete, equal-budget (150,000 step)
+  training run with a full evaluation pass** (see §5's table) — this
+  limitation is resolved as of 2026-09-08 evening. The remaining gap is
+  that 150k steps is still well short of the full 500,000-step runs
+  `configs/config.yaml` specifies as the intended final length.
+- The hand-coded baseline controller (not any RL agent) visibly fails at
+  intersections/curves during manual observation — an **expected,
+  already-understood limitation of that specific crude controller** (a
+  fixed-gain P-controller has no lookahead/anticipation of an upcoming
+  turn, and no smoothness optimization at all), not evidence of a bug in
+  the environment or route logic. A trained RL policy has structural
+  reasons to do better: it can learn anticipatory behavior from
+  experience (which a fixed-gain controller cannot by construction), and
+  the reward function explicitly penalizes jerky/large action changes
+  (`w_smooth`) — the baseline optimizes for neither.
+- Town03 (the originally intended intersection map) crashes this
+  machine's CARLA install on load — an engine/GPU-driver issue, not a
+  codebase bug. Town10HD_Opt is the working substitute (also has real
+  intersections and traffic lights).
+- Stop-sign detection is explicitly out of scope for the current pass —
+  `traffic_rules.py` is structured so a sibling
+  `get_stop_sign_affordance()`/`StopSignViolationDetector` pair could be
+  added later in the same shape, but it hasn't been built.
+- Camera/lidar sensors (a higher-dimensional observation extension) and
+  a discretized-action variant for DQN are both documented as
+  planned-but-not-built extensions, consistent with keeping the current
+  thesis submission scoped to what's actually finished.
+
+## 7. Possible future work (if the thesis wants this section)
+
+- Full 500k-step training runs across all 4 algorithms for final,
+  citable comparative results.
+- Stop-sign detection (designed-for, not built).
+- Vision-based traffic-light/lane detection replacing the current
+  ground-truth reads (the architecture already isolates this behind one
+  call site specifically for this swap).
+- Fixing the Town03 crash to use the originally intended, richer
+  intersection map.
+- A stronger baseline controller (e.g. pure-pursuit with lookahead) for
+  a more meaningful RL-vs-baseline comparison, since the current one is
+  intentionally too crude to be a fair comparison point.
 
 ## 8. How these results compare to published CARLA RL literature (2026-09-09 research pass)
 
@@ -646,6 +744,228 @@ observation versus richer affordance/sensor inputs elsewhere — not
 evidence of a flawed method. This is the correct, defensible way to
 frame "how close are we to the state of the art": right direction,
 smaller scale, explicit about why.
+
+## 9. Extensibility — how to add a new module without touching the rest
+
+This is a deliberate architectural property, not an accident: every
+major swap point below was designed in from the start (§2, §3 already
+explain *why* for each), so this section is a consolidated, practical
+"how to add X" reference — good material for a thesis section arguing
+the system's design is sound for future extension, not just that it
+works today.
+
+| Want to add... | Where | What changes elsewhere |
+|---|---|---|
+| A new RL algorithm (any continuous-action SB3 algorithm) | One entry in `agent/algorithms.py`'s `ALGORITHMS` dict + a hyperparameter block in `configs/config.yaml` | **Nothing.** `agent/train.py`, `agent/evaluate.py`, the callbacks, and the metrics/plotting scripts are all algorithm-name-driven already. |
+| Vision-based traffic-light detection (replacing ground truth) | A new function with `get_traffic_light_affordance()`'s exact signature/return type in `carla_env/traffic_rules.py`, swapped in at its single call site in `env.py` | **Nothing** in `observation.py`, `reward.py`, or the termination logic — they only see the `TrafficLightAffordance` object, not how it was produced. |
+| A learned/perception-based route planner (replacing `GlobalRoutePlanner`) | A drop-in replacement for `RoutePlanner.plan_route()` returning the same `List[RouteWaypoint]` shape | **Nothing** downstream — `get_target_waypoint()`, the observation/reward code, and the multi-lane widening logic all consume the route by its waypoint list, not by how it was planned. |
+| Stop-sign compliance | A sibling `get_stop_sign_affordance()` / `StopSignViolationDetector` pair in `traffic_rules.py`, same shape as the traffic-light pair (`reset()`/`update()`, called from `env.py`'s `step()`) | One new observation dimension (6D instead of 5D) and one new termination reason in `check_termination()`'s priority chain — structurally identical to how the traffic-light dimension was added originally. |
+| Camera/lidar sensors (higher-dimensional observation) | A new sensor class in `carla_env/sensors.py` (same pattern as `CollisionSensor`: `__init__(world, vehicle)`, a callback, `destroy()`) | `observation.py`'s vector grows; anything reading the flat 5D vector directly (the algorithm registry doesn't — SB3 infers input size from `env.observation_space`) needs no change. |
+| Discrete-action support for DQN | A new `CarlaLaneKeepingEnvDiscrete` variant (bucketizing the 2D continuous action into a discrete set) — `agent/algorithms.py`'s registry already has the DQN entry point designed in, just gated on this env variant existing | `train.py`/`evaluate.py` need no change — they're already environment-agnostic beyond the registry lookup. |
+| A stronger baseline (e.g. pure-pursuit with lookahead) | A new file in `agent/` following `agent/baseline.py`'s shape (reads the same observation, returns the same 2D action) | Nothing — it's evaluated with the same `agent/evaluate.py` pipeline as any RL checkpoint. |
+
+The common thread, worth stating explicitly in a design/architecture
+chapter: **every extension point is defined by a data shape (an
+observation vector, a `TrafficLightAffordance`, a `RouteWaypoint`
+list, a 2D action), never by which specific piece of code produced
+that data.** That's what makes each swap isolated to one file instead
+of rippling through the codebase.
+
+## 10. Real code excerpts (for accurate quoting/listings in the thesis)
+
+Exact, current code — not paraphrased from memory — for the pieces
+most worth citing directly as a code listing in the methodology
+chapter. Pulled from the live files on 2026-09-10; if the thesis is
+still being written much later, diff these against the actual files
+before trusting them verbatim.
+
+**The route-tracking algorithm** (`carla_env/route_planner.py`,
+`RoutePlanner.get_closest_waypoint_index`) — the core loop behind §4's
+prose description:
+
+```python
+def get_closest_waypoint_index(
+    self, route, location, start_index=0,
+    max_search_ahead=30, max_search_behind=5, patience=3,
+):
+    start_index = max(0, min(start_index, len(route) - 1))
+
+    def dist_at(i):
+        return self.distance(location, route[i].waypoint.transform.location)
+
+    best_index = start_index
+    best_distance = dist_at(start_index)
+
+    # Small bounded backward check — recovers from minor backward drift
+    # (e.g. rolling back slightly on an incline while stopped at a red
+    # light) that a forward-only search could never recover from.
+    behind_bound = max(0, start_index - max_search_behind)
+    for i in range(start_index - 1, behind_bound - 1, -1):
+        d = dist_at(i)
+        if d < best_distance:
+            best_distance = d
+            best_index = i
+        else:
+            break
+
+    # Forward walk, tolerating up to `patience` non-improving steps in a
+    # row before concluding the local minimum has been passed. Never
+    # looks past where it stopped improving, so it can't jump ahead to
+    # an out-of-sequence point no matter how spatially close it is.
+    search_end = min(start_index + max_search_ahead, len(route))
+    stale_steps = 0
+    for i in range(start_index + 1, search_end):
+        d = dist_at(i)
+        if d < best_distance:
+            best_distance = d
+            best_index = i
+            stale_steps = 0
+        else:
+            stale_steps += 1
+            if stale_steps >= patience:
+                break
+
+    return best_index
+```
+
+**The reward function's two novel terms** (`carla_env/reward.py`) —
+exact formulas already given in prose in §3.5, here as the literal code:
+
+```python
+def compute_smoothness_reward(action_delta: np.ndarray) -> float:
+    delta_magnitude = float(np.abs(action_delta).sum())
+    return max(0.0, 1.0 - delta_magnitude / 4.0)
+
+def compute_progress_reward(speed_kmh: float, target_speed_kmh: float) -> float:
+    return float(min(speed_kmh, target_speed_kmh) / target_speed_kmh)
+```
+
+**Termination priority chain** (`carla_env/reward.py`,
+`check_termination`) — the literal implementation of §3.5's ordered list:
+
+```python
+def check_termination(obs_data, collision_flag, step_count, max_steps=1000,
+                       max_lateral_m=3.5, max_heading_deg=90.0,
+                       stall_flag=False, red_light_violation=False,
+                       destination_reached=False):
+    if stall_flag:
+        return True, False, "stall"
+    if collision_flag:
+        return True, False, "collision"
+    if red_light_violation:
+        return True, False, "red_light_violation"
+    if abs(obs_data.lateral_distance_m) >= max_lateral_m:
+        return True, False, "off_road"
+    max_heading_rad = math.radians(max_heading_deg)
+    if abs(obs_data.heading_error_rad) >= max_heading_rad:
+        return True, False, "wrong_heading"
+    if destination_reached:
+        return True, False, "destination_reached"
+    if step_count >= max_steps:
+        return False, True, "timeout"
+    return False, False, ""
+```
+
+**Red-light violation detection** (`carla_env/traffic_rules.py`,
+`RedLightViolationDetector.update`) — "exiting the zone while still
+moving," not "moving while a light is red":
+
+```python
+def update(self, affordance: TrafficLightAffordance, speed_kmh: float) -> bool:
+    if not self.enabled:
+        return False
+    violated = (
+        self._was_at_light
+        and not affordance.is_at_light
+        and self._was_must_stop
+        and speed_kmh > self.stop_speed_kmh
+    )
+    self._was_at_light  = affordance.is_at_light
+    self._was_must_stop = affordance.must_stop
+    return violated
+```
+
+**Multi-lane off-road tolerance in context** (`carla_env/env.py`,
+inside `step()`) — shows exactly how the centering reward and the
+termination threshold deliberately use different values:
+
+```python
+same_direction_lanes = self._route_planner.count_same_direction_lanes(
+    target_waypoint.waypoint
+)
+effective_max_lateral_m = self.reward_config.max_lateral_m * same_direction_lanes
+
+terminated, truncated, term_reason = check_termination(
+    obs_data            = obs_data,
+    collision_flag      = collision_flag,
+    step_count          = self._step_count,
+    max_steps           = self.max_steps,
+    max_lateral_m       = effective_max_lateral_m,   # widened
+    stall_flag          = stall_flag,
+    red_light_violation = red_light_violation,
+    destination_reached = destination_reached,
+)
+# compute_reward() below still uses self.reward_config.max_lateral_m
+# (the *base*, un-widened value) for the centering term — the agent is
+# still gently pulled toward its own lane regardless of road width.
+```
+
+**The algorithm registry pattern** (`agent/algorithms.py`) — why
+adding an algorithm needs no changes to `train.py`:
+
+```python
+ALGORITHMS = {
+    "ppo":  PPO,
+    "sac":  SAC,
+    "ddpg": DDPG,
+    "td3":  TD3,
+}
+
+def _build_kwargs(algo_name, algo_cfg, action_space):
+    if algo_name in _ON_POLICY_ALGOS:
+        return dict(
+            learning_rate=algo_cfg["learning_rate"], n_steps=algo_cfg["n_steps"],
+            batch_size=algo_cfg["batch_size"], n_epochs=algo_cfg["n_epochs"],
+            gamma=algo_cfg["gamma"], gae_lambda=algo_cfg["gae_lambda"],
+            clip_range=algo_cfg["clip_range"], ent_coef=algo_cfg["ent_coef"],
+            vf_coef=algo_cfg["vf_coef"], max_grad_norm=algo_cfg["max_grad_norm"],
+            verbose=algo_cfg["verbose"],
+        )
+    # Off-policy (SAC/DDPG/TD3) share replay-buffer hyperparameters;
+    # DDPG/TD3 additionally get action noise since they're deterministic
+    # policies (SAC explores via entropy instead) -- see _NOISE_ALGOS
+    # branch in the actual file for that part.
+    kwargs = dict(
+        learning_rate=algo_cfg["learning_rate"], buffer_size=algo_cfg["buffer_size"],
+        learning_starts=algo_cfg["learning_starts"], batch_size=algo_cfg["batch_size"],
+        tau=algo_cfg["tau"], gamma=algo_cfg["gamma"],
+        train_freq=algo_cfg["train_freq"], gradient_steps=algo_cfg["gradient_steps"],
+        verbose=algo_cfg["verbose"],
+    )
+    return kwargs
+```
+
+---
+
+## Changelog (most recent first)
+
+- **2026-09-10**: Fixed a structural bug in this file itself — §5.6/§5.7
+  had been accidentally inserted after §7 instead of after §5.5 (still
+  readable, just out of logical order). Added §1.1 (system capabilities
+  summary), §9 (extensibility/how-to-add-a-module reference table), and
+  §10 (real, current code excerpts for the pieces most worth quoting
+  directly in the methodology chapter) — all requested so the
+  Overleaf-writing session has the same depth of context as this one,
+  without needing repo access itself.
+- **2026-09-09**: Added §5.8 (data-integrity audit — 5 real bugs found
+  and fixed across the metrics/plotting pipeline, see that section for
+  the full list), §5.6/§5.7 (screenshots, trajectory-vs-route figures),
+  §8 (comparison against published CARLA RL literature).
+- **2026-09-08**: Added §3.5 (exact reward formula and termination
+  thresholds), completed the equal-150k-step 4-algorithm comparison
+  (§5), added §5.5 (two-axis speed-vs-reliability framework).
+- **2026-09-07**: 17-issue code-review pass, multi-lane off-road
+  tolerance fix, initial version of this file.
 
 ---
 
